@@ -1,0 +1,11 @@
+datasets
+models
+figures
+logs
+.slurm_logs
+*.pyc
+__pycache__
+saved_models
+shared
+baselines
+utils
