@@ -1,10 +1,12 @@
 import os
 LOCAL = 'nazim' in os.getcwd()
+DATASET_FOLDER = '../offline_qd/datasets/d4rl/'
 if not LOCAL:
     os.environ['MUJOCO_GL'] = 'egl'
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
+    DATASET_FOLDER = '../fre_experiments/datasets/'
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
