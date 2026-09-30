@@ -91,7 +91,7 @@ if __name__ == '__main__':
     save_self_copy(dst_dir=LOGS_FOLDER)
 
     TRAIN_METRICS = ["total_loss", "consistency_loss", "reward_loss", "value_loss", "grad_norm",
-                     "pi_loss", "q_mean"]
+                     "pi_loss", "q_mean", "latent_norm", "latent_std"]
     train_logger = CSVLogger(
         filepath=f"{LOGS_FOLDER}/training_log.csv",
         fieldnames=["step"] + TRAIN_METRICS + ["time"],
@@ -246,10 +246,10 @@ if __name__ == '__main__':
         if ENV_NAME == 'cheetah':
             STATE_DIM, ACTION_DIM = 17, 6
             NUM_TRAJECTORIES, TRAJECTORY_LEN = 10000, 1000
-            dataset = np.load('../offline_qd/datasets/d4rl/cheetah_rnd.npy', allow_pickle=True).item()
+            dataset = np.load('../fre_experiments/datasets/cheetah_rnd.npy', allow_pickle=True).item()
             aux = np.concatenate((
-                np.load('../offline_qd/datasets/d4rl/aux_cheetah.npy').reshape(10000, 1000, 1),
-                np.load('../offline_qd/datasets/d4rl/angmomentum_aux_cheetah.npy').reshape(10000, 1000, 1),
+                np.load('../fre_experiments/datasets/aux_cheetah.npy').reshape(10000, 1000, 1),
+                np.load('../fre_experiments/datasets/angmomentum_aux_cheetah.npy').reshape(10000, 1000, 1),
             ), axis=-1)
             benchmarks = [
                 (cheetah_reward, 'vel10Back', -10),
@@ -262,10 +262,10 @@ if __name__ == '__main__':
         elif ENV_NAME == 'walker':
             STATE_DIM, ACTION_DIM = 24, 6
             NUM_TRAJECTORIES, TRAJECTORY_LEN = 10000, 1000
-            dataset = np.load('../offline_qd/datasets/d4rl/walker_rnd.npy', allow_pickle=True).item()
+            dataset = np.load('../fre_experiments/datasets/walker_rnd.npy', allow_pickle=True).item()
             aux = np.concatenate((
-                np.load('../offline_qd/datasets/d4rl/aux_walker.npy').reshape(10000, 1000, 3),
-                np.load('../offline_qd/datasets/d4rl/angmomentum_aux_walker.npy').reshape(10000, 1000, 1),
+                np.load('../fre_experiments/datasets/aux_walker.npy').reshape(10000, 1000, 3),
+                np.load('../fre_experiments/datasets/angmomentum_aux_walker.npy').reshape(10000, 1000, 1),
             ), axis=-1)
             benchmarks = [
                 (walker_reward, 'stand',  0),
@@ -278,8 +278,8 @@ if __name__ == '__main__':
         elif ENV_NAME == 'quadruped':
             STATE_DIM, ACTION_DIM = 78, 12
             NUM_TRAJECTORIES, TRAJECTORY_LEN = 10000, 1001
-            dataset = np.load('../offline_qd/datasets/d4rl/quadruped_rnd_without_physics.npy', allow_pickle=True).item()
-            aux = np.load('../offline_qd/datasets/d4rl/aux_quadruped.npy', allow_pickle=True)
+            dataset = np.load('../fre_experiments/datasets/quadruped_rnd_without_physics.npy', allow_pickle=True).item()
+            aux = np.load('../fre_experiments/datasets/aux_quadruped.npy', allow_pickle=True)
             benchmarks = [
                 (quadruped_stand, 'stand', None),
                 (quadruped_walk,  'walk',  None),
@@ -417,9 +417,20 @@ if __name__ == '__main__':
     if 'eval_each_steps' in kwargs:
         EVAL_EACH_STEPS = int(kwargs['eval_each_steps'])
 
+    # How the agent acts at eval time:
+    #   mppi   : MPPI planning in latent space (default)
+    #   policy : the policy prior alone, deterministic (no planning, no noise)
+    #   both   : evaluate both at every eval; `return_*` columns = MPPI, `policy_return_*` columns = policy prior
+    EVAL_MODE = str(kwargs['eval_mode']) if 'eval_mode' in kwargs else 'mppi'
+    assert EVAL_MODE in ['mppi', 'policy', 'both'], "eval_mode must be mppi | policy | both"
+    EVAL_MODES = ['mppi', 'policy'] if EVAL_MODE == 'both' else [EVAL_MODE]
+    MODE_NAMES = {'mppi': 'MPPI', 'policy': 'policy prior'}
+
     eval_logger = CSVLogger(
         filepath=f"{LOGS_FOLDER}/eval_log.csv",
-        fieldnames=["step", "return_mean", "return_std", "time"],
+        fieldnames=["step", "return_mean", "return_std"]
+                   + (["policy_return_mean", "policy_return_std"] if EVAL_MODE == 'both' else [])
+                   + ["time"],
     )
 
     # ── Reward labelling: the datasets are reward-free, so we label them with the task's reward ──
@@ -520,6 +531,10 @@ if __name__ == '__main__':
             x = nn.elu(nn.Dense(self.mlp_dim, kernel_init=orth_init, bias_init=nn.initializers.zeros)(x))
             return nn.Dense(1, kernel_init=nn.initializers.zeros, bias_init=nn.initializers.zeros)(x)
 
+    def l2_normalize(x, eps=1e-8):
+        """x / ||x|| along the last axis."""
+        return x / jnp.maximum(jnp.linalg.norm(x, axis=-1, keepdims=True), eps)
+
     def sample_truncated_normal(mu, random_key, std, clip, low=-1.0, high=1.0, eps=1e-6):
         """torch TruncatedNormal.sample(clip): clipped Gaussian noise, output clamped with a straight-through gradient."""
         noise   = jax.random.normal(random_key, mu.shape) * std
@@ -593,14 +608,14 @@ if __name__ == '__main__':
             c = self.cfg
             random_key, ke, kd, kr, kq1, kq2, kp = jax.random.split(random_key, 7)
             obs = jnp.zeros((1, self.obs_dim))
-            za  = jnp.zeros((1, c.latent_dim + self.action_dim))
+            ha  = jnp.zeros((1, c.latent_dim + self.action_dim))
 
             params = {
                 'encoder':  self.encoder.init(ke, obs)['params'],
-                'dynamics': self.dynamics.init(kd, za)['params'],
-                'reward':   self.reward_net.init(kr, za)['params'],
-                'q1':       self.q_net.init(kq1, za)['params'],
-                'q2':       self.q_net.init(kq2, za)['params'],
+                'dynamics': self.dynamics.init(kd, ha)['params'],
+                'reward':   self.reward_net.init(kr, ha)['params'],
+                'q1':       self.q_net.init(kq1, ha)['params'],
+                'q2':       self.q_net.init(kq2, ha)['params'],
             }
             pi_params = self.pi_net.init(kp, jnp.zeros((1, c.latent_dim)))['params']
             target_params = {k: jax.tree_util.tree_map(jnp.copy, params[k]) for k in ('encoder', 'q1', 'q2')}
@@ -614,24 +629,28 @@ if __name__ == '__main__':
 
         # ── model ─────────────────────────────────────────────────────────────
 
+        def _bound(self, h):
+            """Project onto the sphere of radius sqrt(latent_dim), so each coordinate has RMS ~1."""
+            return math.sqrt(self.cfg.latent_dim) * l2_normalize(h)
+
         def encode(self, encoder_params, obs):
-            """h(s) -> z."""
-            return self.encoder.apply({'params': encoder_params}, obs)
+            """Encoder: s -> h (latent state)."""
+            return self._bound(self.encoder.apply({'params': encoder_params}, obs))
 
-        def next(self, params, z, a):
-            """d(z, a) -> z', R(z, a) -> r."""
-            x = jnp.concatenate([z, a], axis=-1)
-            return (self.dynamics.apply({'params': params['dynamics']}, x),
-                    self.reward_net.apply({'params': params['reward']}, x))
+        def next(self, params, h, a):
+            """Residual dynamics h' = h + d(h, a), and reward R(h, a)."""
+            x = jnp.concatenate([h, a], axis=-1)
+            h_next = self._bound(h + self.dynamics.apply({'params': params['dynamics']}, x))
+            return h_next, self.reward_net.apply({'params': params['reward']}, x)
 
-        def q(self, params, z, a):
-            """(Q1(z, a), Q2(z, a)); `params` can be the online or the target parameters."""
-            x = jnp.concatenate([z, a], axis=-1)
+        def q(self, params, h, a):
+            """(Q1(h, a), Q2(h, a)); `params` can be the online or the target parameters."""
+            x = jnp.concatenate([h, a], axis=-1)
             return self.q_net.apply({'params': params['q1']}, x), self.q_net.apply({'params': params['q2']}, x)
 
-        def pi(self, pi_params, z, key, std):
+        def pi(self, pi_params, h, key, std):
             """Deterministic policy prior + clipped Gaussian noise (std=0 -> no noise)."""
-            mu = jnp.tanh(self.pi_net.apply({'params': pi_params}, z))
+            mu = jnp.tanh(self.pi_net.apply({'params': pi_params}, h))
             return sample_truncated_normal(mu, key, std, self.cfg.std_clip) if std > 0 else mu
 
         @partial(jax.jit, static_argnames=("self",))
@@ -648,39 +667,42 @@ if __name__ == '__main__':
 
             obs, action, reward = replay_buffer.sample_sequences(k_batch, c.batch_size, H)   # (H+1,B,D) (H,B,A) (H,B,1)
 
-            # ── targets (no gradient) ─────────────────────────────────────────
-            # consistency target: EMA (target) encoder on the real next observations
-            target_z = jax.lax.stop_gradient(self.encode(ts.target_params['encoder'], obs[1:]))          # (H,B,L)
+            # ── targets ───────────────────────────────────────────────────────
+            target_h = self.encode(ts.target_params['encoder'], obs[1:])                                 # (H,B,L)
             # TD target: online encoder + noisy policy prior, target Q networks (min of the two)
-            next_z    = self.encode(ts.params['encoder'], obs[1:])
-            next_a    = self.pi(ts.pi_params, next_z, k_td, c.min_std)
-            tq1, tq2  = self.q(ts.target_params, next_z, next_a)
-            td_target = jax.lax.stop_gradient(reward + c.discount * jnp.minimum(tq1, tq2))               # (H,B,1)
+            next_h    = self.encode(ts.params['encoder'], obs[1:])
+            next_a    = self.pi(ts.pi_params, next_h, k_td, c.min_std)
+            tq1, tq2  = self.q(ts.target_params, next_h, next_a)
+            td_target = reward + c.discount * jnp.minimum(tq1, tq2)                                      # (H,B,1)
             rho_t     = c.rho ** jnp.arange(H, dtype=jnp.float32)
 
             # ── model loss: latent rollout with consistency / reward / value terms ──
             def loss_fn(params):
-                z0 = self.encode(params['encoder'], obs[0])
+                h0 = self.encode(params['encoder'], obs[0])
 
-                def rollout_step(z, xs):
-                    a_t, target_z_t, td_t, r_t, rho = xs
-                    q1, q2         = self.q(params, z, a_t)                    # Q at the current (predicted) latent
-                    z_next, r_pred = self.next(params, z, a_t)
-                    consistency = rho * jnp.mean((z_next - target_z_t) ** 2, axis=-1)          # (B,)
+                def rollout_step(h, xs):
+                    a_t, target_h_t, td_t, r_t, rho = xs
+                    q1, q2         = self.q(params, h, a_t)                    # Q at the current (predicted) latent
+                    h_next, r_pred = self.next(params, h, a_t)
+                    # squared distance between the L2-normalised latents = 2 - 2 cos(h_next, target) in [0, 4]
+                    # consistency = rho * jnp.mean((l2_normalize(h_next) - l2_normalize(target_h_t)) ** 2, axis=-1)   # (B,)
+                    consistency = rho * jnp.mean((h_next - target_h_t) ** 2, axis=-1)   # (B,)
                     rew         = rho * ((r_pred - r_t) ** 2)[..., 0]
                     val         = rho * ((q1 - td_t) ** 2 + (q2 - td_t) ** 2)[..., 0]
-                    return z_next, (z_next, consistency, rew, val, q1)
+                    return h_next, (h_next, consistency, rew, val, q1)
 
-                _, (zs_next, cons, rew, val, q1s) = jax.lax.scan(
-                    rollout_step, z0, (action, target_z, td_target, reward, rho_t))
-                zs = jnp.concatenate([z0[None], zs_next], axis=0)                              # (H+1,B,L)
+                _, (hs_next, cons, rew, val, q1s) = jax.lax.scan(
+                    rollout_step, h0, (action, target_h, td_target, reward, rho_t))
+                hs = jnp.concatenate([h0[None], hs_next], axis=0)                              # (H+1,B,L)
 
                 cons, rew, val = cons.sum(0), rew.sum(0), val.sum(0)                           # sum over time -> (B,)
                 total = (c.consistency_coef * jnp.minimum(cons, 1e4) + c.reward_coef * jnp.minimum(rew, 1e4)
                          + c.value_coef * jnp.minimum(val, 1e4))
                 total_loss = total.mean()
-                aux = {'zs': zs, 'total_loss': total_loss, 'consistency_loss': cons.mean(),
-                       'reward_loss': rew.mean(), 'value_loss': val.mean(), 'q_mean': q1s[0].mean()}
+                aux = {'hs': hs, 'total_loss': total_loss, 'consistency_loss': cons.mean(),
+                       'reward_loss': rew.mean(), 'value_loss': val.mean(), 'q_mean': q1s[0].mean(),
+                       # collapse / scale-drift monitoring on the encoded latents (not part of the loss)
+                       'latent_norm': jnp.linalg.norm(h0, axis=-1).mean(), 'latent_std': jnp.std(h0, axis=0).mean()}
                 return total_loss / H, aux       # TD-MPC scales the gradient by 1 / horizon
 
             (_, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(ts.params)
@@ -688,12 +710,12 @@ if __name__ == '__main__':
             updates, optimizer_state = self.optimizer.update(grads, ts.optimizer_state, ts.params)
             params = optax.apply_updates(ts.params, updates)
 
-            # ── policy prior: maximise min(Q1, Q2) along the (detached) latent trajectory ──
-            zs = jax.lax.stop_gradient(aux['zs'])
+            # ── policy prior: maximise min(Q1, Q2) along the latent trajectory ──
+            hs = aux['hs']     # a plain array here (aux is not differentiated), so it is a constant for the policy loss
 
             def pi_loss_fn(pi_params):
-                a = self.pi(pi_params, zs, k_pi, c.min_std)                                     # (H+1,B,A)
-                q1, q2 = self.q(params, zs, a)
+                a = self.pi(pi_params, hs, k_pi, c.min_std)                                     # (H+1,B,A)
+                q1, q2 = self.q(params, hs, a)
                 Q = jnp.minimum(q1, q2)
                 rho = c.rho ** jnp.arange(H + 1, dtype=jnp.float32)
                 return jnp.sum(-Q.mean(axis=(1, 2)) * rho)
@@ -712,21 +734,22 @@ if __name__ == '__main__':
                             random_key=key, steps=ts.steps + 1)
             metrics = {'total_loss': aux['total_loss'], 'consistency_loss': aux['consistency_loss'],
                        'reward_loss': aux['reward_loss'], 'value_loss': aux['value_loss'],
-                       'grad_norm': grad_norm, 'pi_loss': pi_loss, 'q_mean': aux['q_mean']}
+                       'grad_norm': grad_norm, 'pi_loss': pi_loss, 'q_mean': aux['q_mean'],
+                       'latent_norm': aux['latent_norm'], 'latent_std': aux['latent_std']}
             return ts, metrics
 
         # ── MPPI planning in latent space ─────────────────────────────────────
 
-        def _estimate_value(self, params, pi_params, z, actions, key):
-            """Discounted model return over the horizon + bootstrapped min(Q1, Q2) at the end. z (S,L), actions (H,S,A)."""
+        def _estimate_value(self, params, pi_params, h, actions, key):
+            """Discounted model return over the horizon + bootstrapped min(Q1, Q2) at the end. h (S,L), actions (H,S,A)."""
             c = self.cfg
             G, discount = 0.0, 1.0
             for t in range(c.horizon):
-                z, reward = self.next(params, z, actions[t])
+                h, reward = self.next(params, h, actions[t])
                 G = G + discount * reward
                 discount = discount * c.discount
-            a = self.pi(pi_params, z, key, c.min_std)
-            q1, q2 = self.q(params, z, a)
+            a = self.pi(pi_params, h, key, c.min_std)
+            q1, q2 = self.q(params, h, a)
             return (G + discount * jnp.minimum(q1, q2))[..., 0]
 
         def _plan_single(self, ts, obs, prev_mean, use_prev, key):
@@ -736,18 +759,18 @@ if __name__ == '__main__':
             params, pi_params = ts.params, ts.pi_params
             num_pi = int(c.mixture_coef * c.num_samples)
 
-            z0 = self.encode(params['encoder'], obs[None])[0]
+            h0 = self.encode(params['encoder'], obs[None])[0]
 
             # trajectories sampled from the (noisy) policy prior; they are added on top of `num_samples`
-            _z, pi_actions = jnp.tile(z0, (num_pi, 1)), []
+            _h, pi_actions = jnp.tile(h0, (num_pi, 1)), []
             for t in range(H):
                 key, sub = jax.random.split(key)
-                a = self.pi(pi_params, _z, sub, c.min_std)
+                a = self.pi(pi_params, _h, sub, c.min_std)
                 pi_actions.append(a)
-                _z, _ = self.next(params, _z, a)
+                _h, _ = self.next(params, _h, a)
             pi_actions = jnp.stack(pi_actions)                                      # (H, num_pi, A)
 
-            z    = jnp.tile(z0, (c.num_samples + num_pi, 1))
+            h    = jnp.tile(h0, (c.num_samples + num_pi, 1))
             mean = jnp.where(use_prev, jnp.concatenate([prev_mean[1:], jnp.zeros((1, A))], axis=0), jnp.zeros((H, A)))
             std  = 2.0 * jnp.ones((H, A))
 
@@ -757,7 +780,7 @@ if __name__ == '__main__':
                 sampled = jnp.clip(mean[:, None] + std[:, None] * noise, -1, 1)
                 actions = jnp.concatenate([sampled, pi_actions], axis=1)            # (H, S + num_pi, A)
 
-                value = jnp.nan_to_num(self._estimate_value(params, pi_params, z, actions, k_val))
+                value = jnp.nan_to_num(self._estimate_value(params, pi_params, h, actions, k_val))
                 elite_value, elite_idx = jax.lax.top_k(value, c.num_elites)
                 elite_actions = actions[:, elite_idx]                               # (H, E, A)
 
@@ -777,6 +800,12 @@ if __name__ == '__main__':
             """MPPI for a batch of envs. obs (N, obs_dim), prev_mean (N, H, A). use_prev=False on the first step."""
             keys = jax.random.split(key, obs.shape[0])
             return jax.vmap(self._plan_single, in_axes=(None, 0, 0, None, 0))(ts, obs, prev_mean, use_prev, keys)
+
+        @partial(jax.jit, static_argnames=("self",))
+        def act_policy_batch(self, ts, obs):
+            """Policy prior alone, no planning: a = pi(h(s)), deterministic (no exploration noise). obs (N, obs_dim)."""
+            h = self.encode(ts.params['encoder'], obs)
+            return self.pi(ts.pi_params, h, None, 0.0)
 
     tdmpc_config = TDMPCConfig(batch_size=BATCH_SIZE, horizon=HORIZON)
     if 'discount' in kwargs:
@@ -805,12 +834,13 @@ if __name__ == '__main__':
             return agent.update(ts, replay_buffer)
         return jax.lax.scan(body, train_state, None, length=SCAN_LENGTH)
 
-    # ── Evaluation (MPPI planning) ────────────────────────────────────────────────
+    # ── Evaluation (MPPI planning and/or policy prior alone) ──────────────────────
 
     eval_envs = []   # pool of env instances, grown on demand and reused across evals
 
-    def rollout_batch(ts, random_key):
-        """NUM_EVALS envs rolled out in lock-step with MPPI (one batched, jitted planning call per step)."""
+    def rollout_batch(ts, random_key, mode='mppi'):
+        """NUM_EVALS envs rolled out in lock-step, one batched jitted call per step.
+        mode='mppi': MPPI planning. mode='policy': the policy prior alone (deterministic, no planning)."""
         while len(eval_envs) < NUM_EVALS:
             eval_envs.append(make_eval_env())
         envs = eval_envs[:NUM_EVALS]
@@ -825,8 +855,11 @@ if __name__ == '__main__':
             if env_physics(envs[0]) is not None:
                 phys_l.append(np.stack([env_physics(e) for e in envs]))
 
-            random_key, sub = jax.random.split(random_key)
-            actions, prev_mean = agent.plan_batch(ts, jnp.asarray(obs), prev_mean, jnp.asarray(step > 0), sub)
+            if mode == 'policy':
+                actions = agent.act_policy_batch(ts, jnp.asarray(obs))
+            else:
+                random_key, sub = jax.random.split(random_key)
+                actions, prev_mean = agent.plan_batch(ts, jnp.asarray(obs), prev_mean, jnp.asarray(step > 0), sub)
             states = [env_step(e, a) for e, a in zip(envs, np.asarray(actions))]
 
         obs_traj  = np.stack(obs_l).transpose(1, 0, 2)
@@ -834,7 +867,7 @@ if __name__ == '__main__':
         phys_traj = np.stack(phys_l).transpose(1, 0, 2) if phys_l else None
         return obs_traj, aux_traj, phys_traj
 
-    def plot_task(steps, train_state, obs_traj, aux_traj, phys_traj):
+    def plot_task(steps, train_state, obs_traj, aux_traj, phys_traj, mode='mppi', tag=''):
         """3 panels: task reward on the dataset, reward-head prediction vs truth, agent trajectories."""
         fig, axs = plt.subplots(1, 3, figsize=(15, 4))
         eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), 10_000)
@@ -869,13 +902,13 @@ if __name__ == '__main__':
 
         axs[0].set_title(f'{TASK}')
         axs[1].set_title('Reward head')
-        axs[2].set_title('Agent Trajectory (MPPI)')
+        axs[2].set_title(f'Agent Trajectory ({MODE_NAMES[mode]})')
         plt.tight_layout()
-        plt.savefig(f"{LOGS_FOLDER}/task-steps:{steps}.png")
+        plt.savefig(f"{LOGS_FOLDER}/task{tag}-steps:{steps}.png")
         plt.close()
 
-    def run_eval(train_state, steps, make_plot):
-        obs_traj, aux_traj, phys_traj = rollout_batch(train_state, next_eval_key())
+    def run_eval(train_state, steps, make_plot, mode='mppi', tag=''):
+        obs_traj, aux_traj, phys_traj = rollout_batch(train_state, next_eval_key(), mode)
 
         # same metric as the FB script: sum over the trajectory of the task reward of the visited states
         trajectory_rewards = np.asarray(reward_fn(jnp.asarray(aux_traj, dtype=jnp.float32), reward_param)).sum(axis=-1)
@@ -883,13 +916,13 @@ if __name__ == '__main__':
             # goal tasks: 1 if the goal was reached at least once, else 0
             trajectory_rewards = np.where(trajectory_rewards != -EVAL_STEPS, 1.0, 0.0)
 
-        print(TASK, ':')
+        print(TASK, f'[{MODE_NAMES[mode]}]', ':')
         print('\tRewards:', trajectory_rewards.tolist())
         print('\tmean:', trajectory_rewards.mean())
         print('\tstd:',  trajectory_rewards.std(ddof=1))
 
         if make_plot:
-            plot_task(steps, train_state, obs_traj, aux_traj, phys_traj)
+            plot_task(steps, train_state, obs_traj, aux_traj, phys_traj, mode, tag)
         return trajectory_rewards.mean(), trajectory_rewards.std(ddof=1)
 
     def save_agent(train_state, path):
@@ -904,7 +937,7 @@ if __name__ == '__main__':
 
     # ── Training ──────────────────────────────────────────────────────────────────
 
-    rewards_logs = []
+    rewards_logs = {mode: [] for mode in EVAL_MODES}
     n_evals = 0
 
     for steps in tqdm(range(NUM_OUTER_STEPS)):
@@ -922,15 +955,25 @@ if __name__ == '__main__':
         if (steps + 1) % EVAL_EACH_STEPS == 0:
             make_plot = (n_evals % PLOT_EACH_EVALS == 0)
             start_time = time.time()
-            mean, std = run_eval(train_state, num_updates, make_plot)
+            results = {}
+            for i, mode in enumerate(EVAL_MODES):
+                results[mode] = run_eval(train_state, num_updates, make_plot, mode, tag='' if i == 0 else f'-{mode}')
             n_evals += 1
 
-            eval_logger.log({'step': num_updates, 'return_mean': float(mean), 'return_std': float(std),
-                             'time': time.time() - start_time})
+            first = EVAL_MODES[0]
+            eval_row = {'step': num_updates, 'return_mean': float(results[first][0]),
+                        'return_std': float(results[first][1]), 'time': time.time() - start_time}
+            if EVAL_MODE == 'both':
+                eval_row['policy_return_mean'] = float(results['policy'][0])
+                eval_row['policy_return_std']  = float(results['policy'][1])
+            eval_logger.log(eval_row)
 
-            rewards_logs.append(float(mean))
             fig, ax = plt.subplots(1, 1, figsize=(6, 5))
-            ax.plot(rewards_logs)
+            for mode in EVAL_MODES:
+                rewards_logs[mode].append(float(results[mode][0]))
+                ax.plot(rewards_logs[mode], label=MODE_NAMES[mode])
+            if len(EVAL_MODES) > 1:
+                ax.legend()
             ax.set_title(TASK)
             plt.tight_layout()
             plt.savefig(f"{LOGS_FOLDER}/rewards.png")

@@ -8,3 +8,5 @@ __pycache__
 saved_models
 shared
 baselines
+tmp.csv
+plot_csv.ipynb
