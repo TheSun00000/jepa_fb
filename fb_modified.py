@@ -33,7 +33,7 @@ from flax import serialization
 import jax.numpy as jnp
 import optax
 
-from utils.logs import parse_kwargs
+from utils.logs import parse_kwargs, resolve_seed, run_info, mark_finished, add_text_to_file
 
 
 class CSVLogger:
@@ -73,7 +73,7 @@ if __name__ == '__main__':
 
     # ── Config ────────────────────────────────────────────────────────────────────
     # cheetah | walker | quadruped (dm_control)  ;  antmaze (d4rl antmaze-large-diverse-v2)
-    SEED = int(kwargs['seed']) if 'seed' in kwargs else 0
+    SEED = resolve_seed(kwargs)      # random unless seed= is given; recorded in info.txt
 
     # ── Logging ───────────────────────────────────────────────────────────────────
     now = datetime.now()
@@ -1044,6 +1044,8 @@ if __name__ == '__main__':
     rewards_logs = np.zeros((N_BENCH, 0))
     n_evals = 0
 
+    add_text_to_file(f'{LOGS_FOLDER}/info.txt', run_info(globals()))      # seed, job, git, command, protocol, data, versions, start time
+
     for steps in tqdm(range(NUM_OUTER_STEPS)):
         num_updates = (steps + 1) * SCAN_LENGTH
 
@@ -1086,3 +1088,5 @@ if __name__ == '__main__':
 
         if (steps + 1) % SAVE_EACH_STEPS == 0:
             save_agent(train_state, f"{MODEL_SAVE_FOLDER}/fb_agent_step:{num_updates}.pickle")
+
+    mark_finished(f'{LOGS_FOLDER}/info.txt', NUM_OUTER_STEPS * SCAN_LENGTH)

@@ -33,7 +33,7 @@ from flax import serialization
 import jax.numpy as jnp
 import optax
 
-from utils.logs import parse_kwargs
+from utils.logs import parse_kwargs, resolve_seed, run_info, mark_finished, add_text_to_file
 
 
 class CSVLogger:
@@ -74,7 +74,7 @@ if __name__ == '__main__':
     # ── Config ────────────────────────────────────────────────────────────────────
     # cheetah | walker | quadruped (dm_control)  ;  antmaze (d4rl antmaze-large-diverse-v2)
     # Zero-shot: nothing is trained on a reward. Every benchmark task of the env is evaluated.
-    SEED = int(kwargs['seed']) if 'seed' in kwargs else 0
+    SEED = resolve_seed(kwargs)      # random unless seed= is given; recorded in info.txt
 
     # ── Logging ───────────────────────────────────────────────────────────────────
     now = datetime.now()
@@ -1106,6 +1106,8 @@ if __name__ == '__main__':
     rewards_logs = {mode: np.zeros((N_BENCH, 0)) for mode in EVAL_MODES}
     n_evals = 0
 
+    add_text_to_file(f'{LOGS_FOLDER}/info.txt', run_info(globals()))      # seed, job, git, command, protocol, data, versions, start time
+
     for steps in tqdm(range(NUM_OUTER_STEPS)):
         num_updates = (steps + 1) * SCAN_LENGTH
 
@@ -1159,3 +1161,5 @@ if __name__ == '__main__':
 
         if (steps + 1) % SAVE_EACH_STEPS == 0:
             save_agent(train_state, f"{MODEL_SAVE_FOLDER}/tdmpc_sf_fb_step:{num_updates}.pickle")
+
+    mark_finished(f'{LOGS_FOLDER}/info.txt', NUM_OUTER_STEPS * SCAN_LENGTH)

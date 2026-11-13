@@ -2,7 +2,11 @@
 
 ## Where runs happen
 On Jean Zay (H100 dev for training, V100 dev for eval-only). Each run writes `logs/<timestamp>_<exp_name>-<env>/` with
-`training_log.csv`, `eval_log.csv`, `info.txt` (line 1: the command-line kwargs, line 2: the config dataclass) and a copy of the script.
+`training_log.csv`, `eval_log.csv`, `info.txt` and a copy of the script. `info.txt` (from 2026-11-13, `utils/logs.py:run_info`):
+line 1 the command-line kwargs (with the resolved `seed`), line 2 the config dataclass, then `seed:` (random unless `seed=` is given),
+`job:` (Slurm job id, name, node, GPU), `git:` (commit, clean or the list of uncommitted files), `command:`, `protocol:` (updates,
+eval_every, num_evals, z_labels, horizon, batch_size), `data:`, `versions:`, `started:`, and `finished:` only when training reached its
+last update (a run cut by the time limit has no `finished:` line).
 The job's `.slurm_logs/<script>_<jobid>.out` starts with `Running: <command>` and prints `LOGS_FOLDER`.
 
 ## Reading the logs

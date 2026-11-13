@@ -59,18 +59,24 @@ def read_csv(path):
 
 
 def read_info(folder):
-    """(kwargs dict, config line) from info.txt: line 1 is the command-line kwargs, line 2 the config dataclass."""
+    """(kwargs dict, config line, meta) from info.txt: line 1 is the command-line kwargs, line 2 the config dataclass, then (runs from
+    2026-11-13 on) `key: value` metadata lines: seed, job, git, command, protocol, data, versions, started, finished (only if completed)."""
     try:
         lines = open(os.path.join(LOGS, folder, 'info.txt')).read().splitlines()
     except OSError:
-        return {}, ''
+        return {}, '', {}
+    meta = {}
+    for l in lines[1:]:
+        m = re.match(r'(seed|job|git|command|protocol|data|versions|started|finished): (.*)$', l)
+        if m:
+            meta[m.group(1)] = m.group(2).strip()
     kw = {}
     if lines:
         try:
             kw = ast.literal_eval(lines[0])
         except (ValueError, SyntaxError):
             kw = {}
-    return kw if isinstance(kw, dict) else {}, (lines[1] if len(lines) > 1 else '')
+    return kw if isinstance(kw, dict) else {}, (lines[1] if len(lines) > 1 else ''), meta
 
 
 def parse_folder(folder):
@@ -96,7 +102,7 @@ def fmt_val(v):
 def index_run(folder):
     date, time, family, env_guess = parse_folder(folder)
     ev = read_csv(os.path.join(LOGS, folder, 'eval_log.csv'))
-    kw, cfg = read_info(folder)
+    kw, cfg, meta = read_info(folder)
     rec = {'folder': folder, 'date': date, 'time': time, 'family': family, 'env': kw.get('env_name') or env_guess}
     flags = {k: fmt_val(v) for k, v in kw.items() if k not in IGNORE_FLAGS}
     if 'task' in flags:
@@ -108,13 +114,17 @@ def index_run(folder):
         m = re.search(r'seed=(\d+)', cfg)
         seed = m.group(1) if m else None
     rec['seed'] = seed
+    for k in ('job', 'git', 'started', 'finished'):
+        if k in meta:
+            rec[k] = meta[k]
     if not ev:
         rec.update(nEvals=0, lastStep=0, complete=False)
         return rec, None
     cols = ev[0].keys()
     steps = [int(float(r['step'])) for r in ev if num(r.get('step')) is not None]
     rec['nEvals'], rec['lastStep'] = len(ev), (steps[-1] if steps else 0)
-    rec['complete'] = rec['lastStep'] >= FULL_STEPS
+    # newer runs write a `finished:` line when training reaches its last update; older ones are judged by the last eval step
+    rec['complete'] = ('finished' in meta) or rec['lastStep'] >= FULL_STEPS
     last = ev[-LAST_K:]
 
     if 'return_mean' in cols:                                  # tdmpc_jax.py, one task, true reward
