@@ -1,0 +1,8 @@
+[Unit]
+Description=Submit the queued fb_jepa experiments to Jean Zay when job slots are free (tools/queue.py submit)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nazim/Script/fb_jepa
+ExecStart=/home/nazim/Script/fb_jepa/tools/queue.py submit --notify
+TimeoutStartSec=300

@@ -1,0 +1,8 @@
+[Unit]
+Description=Collect Slurm job status from Jean Zay for the fb_jepa tracker (read-only)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nazim/Script/fb_jepa
+ExecStart=/home/nazim/Script/fb_jepa/tools/hpc_status.py --diff
+TimeoutStartSec=120

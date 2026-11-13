@@ -522,6 +522,75 @@ if __name__ == '__main__':
             x = nn.elu(nn.Dense(self.mlp_dim, kernel_init=orth_init, bias_init=nn.initializers.zeros)(x))
             return nn.Dense(self.out_dim, kernel_init=nn.initializers.zeros, bias_init=nn.initializers.zeros)(x)
 
+    class TorchDense(nn.Module):
+        """nn.Dense with torch's default nn.Linear init: U(-1/sqrt(fan_in), 1/sqrt(fan_in)) for W and b (as in the FB script)."""
+        features: int
+
+        @nn.compact
+        def __call__(self, x):
+            fan_in = x.shape[-1]
+            bound  = 1.0 / math.sqrt(fan_in)
+            init   = lambda key, shape, dtype=jnp.float32: jax.random.uniform(key, shape, dtype, -bound, bound)
+            kernel = self.param('kernel', init, (fan_in, self.features))
+            bias   = self.param('bias', init, (self.features,))
+            return x @ kernel + bias
+
+    class NTanh(nn.Module):
+        """FB 'ntanh': LayerNorm followed by Tanh."""
+        @nn.compact
+        def __call__(self, x):
+            return jnp.tanh(nn.LayerNorm(epsilon=1e-5)(x))
+
+    class ForwardMap(nn.Module):
+        """FB ForwardMap (preprocess=True), used as psi: (h, z, a) -> (psi1, psi2). Two embedding branches, a shared
+        merge, and two heads."""
+        hidden_dim:  int
+        feature_dim: int
+        z_dim:       int
+        add_trunk:   bool = False
+
+        @nn.compact
+        def __call__(self, obs, z, action):
+            # obs_action_net: Linear -> ntanh -> Linear -> relu
+            oa = TorchDense(self.hidden_dim)(jnp.concatenate([obs, action], axis=-1))
+            oa = NTanh()(oa)
+            oa = nn.relu(TorchDense(self.feature_dim)(oa))
+            # obs_z_net: Linear -> ntanh -> Linear -> relu
+            oz = TorchDense(self.hidden_dim)(jnp.concatenate([obs, z], axis=-1))
+            oz = NTanh()(oz)
+            oz = nn.relu(TorchDense(self.feature_dim)(oz))
+
+            h = jnp.concatenate([oa, oz], axis=-1)
+            if self.add_trunk:
+                h = nn.relu(TorchDense(self.hidden_dim)(h))
+
+            def head(h):
+                x = nn.relu(TorchDense(self.hidden_dim)(h))
+                return TorchDense(self.z_dim)(x)
+
+            return head(h), head(h)
+
+    class Actor(nn.Module):
+        """FB Actor (preprocess=True): pi(a | h, z), returns the mean action mu = tanh(policy(.))."""
+        hidden_dim:  int
+        feature_dim: int
+        action_dim:  int
+        add_trunk:   bool = False
+
+        @nn.compact
+        def __call__(self, obs, z):
+            o = NTanh()(TorchDense(self.hidden_dim)(obs))
+            o = nn.relu(TorchDense(self.feature_dim)(o))
+            oz = NTanh()(TorchDense(self.hidden_dim)(jnp.concatenate([obs, z], axis=-1)))
+            oz = nn.relu(TorchDense(self.feature_dim)(oz))
+
+            h = jnp.concatenate([o, oz], axis=-1)
+            if self.add_trunk:
+                h = nn.relu(TorchDense(self.hidden_dim)(h))
+
+            h = nn.relu(TorchDense(self.hidden_dim)(h))
+            return jnp.tanh(TorchDense(self.action_dim)(h))
+
     def l2_normalize(x, eps=1e-8):
         """x / ||x|| along the last axis."""
         return x / jnp.maximum(jnp.linalg.norm(x, axis=-1, keepdims=True), eps)
@@ -553,8 +622,13 @@ if __name__ == '__main__':
         rho:               float = 0.5
         discount:          float = 0.99
         consistency_coef:  float = 2.0
-        ortho_coef:        float = 0.0      # FB-style orthonormality loss on phi(s); 0 = off (flag)
+        ortho_coef:        float = 0.5      # FB-style orthonormality loss on phi(s); 0 = off (flag)
         mix_ratio:         float = 0.5      # fraction of task vectors taken from phi(random dataset state), as in FB
+        # psi / policy networks
+        fb_networks:       bool  = True     # True: the FB ForwardMap / Actor architectures (two branches, LayerNorm+tanh);
+                                            # False: the TD-MPC-style PsiNet / MLP used before
+        hidden_dim:        int   = 1024     # FB-network sizes (as in the FB script)
+        feature_dim:       int   = 512
         # policy prior noise
         min_std:           float = 0.05
         std_clip:          float = 0.3
@@ -569,7 +643,7 @@ if __name__ == '__main__':
     class TDMPCSFTrainingState(flax.struct.PyTreeNode):
         params:                Any          # model: {'encoder', 'dynamics'}
         psi_params:            Any          # {'psi1', 'psi2'}
-        target_params:         Any          # EMA of {'encoder', 'psi1', 'psi2'}
+        target_params:         Any          # EMA of {'encoder'} + the psi parameters
         pi_params:             Any
         optimizer_state:       optax.OptState
         psi_optimizer_state:   optax.OptState
@@ -588,8 +662,13 @@ if __name__ == '__main__':
             mlp = (c.mlp_dim, c.mlp_dim)
             self.encoder  = MLP(hidden=(c.enc_dim, c.enc_dim), out_dim=c.latent_dim)
             self.dynamics = MLP(hidden=mlp, out_dim=c.latent_dim)
-            self.psi_net  = PsiNet(c.mlp_dim, c.latent_dim)     # used twice, with independent parameters (psi1, psi2)
-            self.pi_net   = MLP(hidden=mlp, out_dim=action_dim)
+            if c.fb_networks:
+                # FB architectures: psi = ForwardMap on (h, z, a) with two heads (psi1, psi2); pi = Actor on (h, z)
+                self.psi_net = ForwardMap(c.hidden_dim, c.feature_dim, c.latent_dim)
+                self.pi_net  = Actor(c.hidden_dim, c.feature_dim, action_dim)
+            else:
+                self.psi_net = PsiNet(c.mlp_dim, c.latent_dim)  # used twice, with independent parameters (psi1, psi2)
+                self.pi_net  = MLP(hidden=mlp, out_dim=action_dim)
 
             make_opt = lambda: optax.chain(optax.clip_by_global_norm(c.grad_clip_norm), optax.adam(c.lr))
             self.optimizer, self.psi_optimizer, self.pi_optimizer = make_opt(), make_opt(), make_opt()
@@ -609,16 +688,18 @@ if __name__ == '__main__':
                 'encoder':  self.encoder.init(ke, obs)['params'],
                 'dynamics': self.dynamics.init(kd, ha)['params'],
             }
-            psi_params = {
-                'psi1': self.psi_net.init(kp1, haz)['params'],
-                'psi2': self.psi_net.init(kp2, haz)['params'],
-            }
-            pi_params = self.pi_net.init(kpi, hz)['params']
-            target_params = {
-                'encoder': jax.tree_util.tree_map(jnp.copy, params['encoder']),
-                'psi1':    jax.tree_util.tree_map(jnp.copy, psi_params['psi1']),
-                'psi2':    jax.tree_util.tree_map(jnp.copy, psi_params['psi2']),
-            }
+            if c.fb_networks:
+                h_d, a_d, z_d = jnp.zeros((1, L)), jnp.zeros((1, self.action_dim)), jnp.zeros((1, L))
+                psi_params = {'psi': self.psi_net.init(kp1, h_d, z_d, a_d)['params']}
+                pi_params  = self.pi_net.init(kpi, h_d, z_d)['params']
+            else:
+                psi_params = {
+                    'psi1': self.psi_net.init(kp1, haz)['params'],
+                    'psi2': self.psi_net.init(kp2, haz)['params'],
+                }
+                pi_params = self.pi_net.init(kpi, hz)['params']
+            target_params = {'encoder': jax.tree_util.tree_map(jnp.copy, params['encoder'])}
+            target_params.update({k: jax.tree_util.tree_map(jnp.copy, v) for k, v in psi_params.items()})
 
             return TDMPCSFTrainingState(
                 params=params, psi_params=psi_params, target_params=target_params, pi_params=pi_params,
@@ -645,6 +726,8 @@ if __name__ == '__main__':
 
         def psi(self, psi_params, h, a, z):
             """(psi1(h, a, z), psi2(h, a, z)); `psi_params` can be the online or the target parameters."""
+            if self.cfg.fb_networks:
+                return self.psi_net.apply({'params': psi_params['psi']}, h, z, a)
             x = jnp.concatenate([h, a, z], axis=-1)
             return self.psi_net.apply({'params': psi_params['psi1']}, x), self.psi_net.apply({'params': psi_params['psi2']}, x)
 
@@ -654,7 +737,10 @@ if __name__ == '__main__':
 
         def pi(self, pi_params, h, z, key, std):
             """Deterministic policy prior pi(a | h, z) + clipped Gaussian noise (std=0 -> no noise)."""
-            mu = jnp.tanh(self.pi_net.apply({'params': pi_params}, jnp.concatenate([h, z], axis=-1)))
+            if self.cfg.fb_networks:
+                mu = self.pi_net.apply({'params': pi_params}, h, z)                  # the FB Actor already applies tanh
+            else:
+                mu = jnp.tanh(self.pi_net.apply({'params': pi_params}, jnp.concatenate([h, z], axis=-1)))
             return sample_truncated_normal(mu, key, std, self.cfg.std_clip) if std > 0 else mu
 
         def sample_z(self, random_key, size: int):
@@ -775,7 +861,7 @@ if __name__ == '__main__':
 
             # ── EMA of the target encoder and target psi networks (every `update_freq` updates) ──
             tau = c.tau * (ts.steps % c.update_freq == 0)
-            online = {'encoder': params['encoder'], 'psi1': psi_params['psi1'], 'psi2': psi_params['psi2']}
+            online = {'encoder': params['encoder'], **psi_params}
             target_params = jax.tree_util.tree_map(lambda p, t: t + tau * (p - t), online, ts.target_params)
 
             ts = ts.replace(params=params, psi_params=psi_params, target_params=target_params, pi_params=pi_params,
@@ -869,6 +955,8 @@ if __name__ == '__main__':
         tdmpc_config = dataclasses.replace(tdmpc_config, ortho_coef=float(kwargs['ortho_coef']))
     if 'mix_ratio' in kwargs:
         tdmpc_config = dataclasses.replace(tdmpc_config, mix_ratio=float(kwargs['mix_ratio']))
+    if 'fb_networks' in kwargs:
+        tdmpc_config = dataclasses.replace(tdmpc_config, fb_networks=str(kwargs['fb_networks']).lower() in ('1', 'true', 'yes'))
     print(tdmpc_config)
     with open(f'{LOGS_FOLDER}/info.txt', 'a') as file:
         file.write(str(tdmpc_config) + '\n')

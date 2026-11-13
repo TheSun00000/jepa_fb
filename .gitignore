@@ -10,3 +10,8 @@ shared
 baselines
 tmp.csv
 plot_csv.ipynb
+csv_files
+backup_local_2026-11-13
+hpc
+# local queue of experiments (tools/queue.py); scripts/queue/ is tracked
+/queue/

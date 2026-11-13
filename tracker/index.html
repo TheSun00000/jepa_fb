@@ -1,0 +1,649 @@
+<title>fb_jepa Console</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Martian+Mono:wght@500;700&display=swap">
+<style>
+/* Layout: a single terminal pane. Status line on top, tab prompt below, one screen per tab; tables scroll inside their own box.
+   Colour encodes the two ways of acting: MPPI planning = phosphor green, FB policy = amber. Everything else stays quiet. */
+:root {
+  color-scheme: dark;
+  --bg: #0a0d0b;
+  --pane: #0f1411;
+  --pane-2: #141b16;
+  --line: #1f2a23;
+  --line-2: #2b3a30;
+  --ink: #cfdcd2;
+  --dim: #71877a;
+  --faint: #44564a;
+  --mppi: #57e38c;
+  --mppi-soft: #10301d;
+  --policy: #f2b54a;
+  --policy-soft: #33270f;
+  --info: #6fc6db;
+  --info-soft: #0f2a31;
+  --bad: #ff6f61;
+  --bad-soft: #3a1512;
+  --font: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-head: "Martian Mono", "JetBrains Mono", ui-monospace, monospace;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 36px;
+  --t-xs: 11px; --t-sm: 12px; --t-md: 13px; --t-lg: 16px; --t-xl: 22px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 400 var(--t-md)/1.55 var(--font);
+  font-variant-numeric: tabular-nums;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: var(--s4) var(--s6);
+}
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: var(--s4); }
+a { color: var(--info); }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 1px solid var(--mppi); outline-offset: 2px; }
+
+/* status line */
+.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s2) var(--s4); border-bottom: 1px solid var(--line); padding-bottom: var(--s3); }
+.brand { font: 700 var(--t-xl)/1.1 var(--font-head); letter-spacing: -0.01em; margin: 0; }
+.brand .host { color: var(--mppi); }
+.brand .path { color: var(--dim); font-weight: 500; }
+.brand .cur { display: inline-block; width: 0.55em; height: 1em; background: var(--mppi); vertical-align: -0.12em; margin-left: 0.15em; animation: blink 1.1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .brand .cur { animation: none; } }
+.statline { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); color: var(--dim); font-size: var(--t-sm); }
+.statline b { color: var(--ink); font-weight: 500; }
+.statline .k { text-transform: uppercase; letter-spacing: 0.08em; font-size: var(--t-xs); }
+
+/* tabs */
+nav { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); font-size: var(--t-md); }
+nav a { color: var(--dim); text-decoration: none; padding: 2px 0; }
+nav a::before { content: "["; color: var(--faint); }
+nav a::after { content: "]"; color: var(--faint); }
+nav a[aria-current="page"] { color: var(--mppi); }
+nav a[aria-current="page"]::before, nav a[aria-current="page"]::after { color: var(--mppi); }
+nav a:hover { color: var(--ink); }
+
+section[hidden] { display: none !important; }
+h2 { font: 700 var(--t-lg)/1.3 var(--font-head); margin: 0; text-wrap: balance; }
+h2 .hash { color: var(--faint); margin-right: 0.4em; }
+h3 { font: 500 var(--t-md)/1.4 var(--font); margin: 0; color: var(--ink); text-wrap: balance; }
+.lede { color: var(--dim); margin: 0; max-width: 72ch; }
+.sec { display: grid; gap: var(--s4); }
+.grid2 { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); }
+@media (max-width: 860px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+.pane { background: var(--pane); border: 1px solid var(--line); padding: var(--s4); display: grid; gap: var(--s3); min-width: 0; }
+.pane > header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: var(--s2); }
+.label { text-transform: uppercase; letter-spacing: 0.1em; font-size: var(--t-xs); color: var(--dim); }
+
+/* legend */
+.legend { display: flex; flex-wrap: wrap; gap: var(--s3); font-size: var(--t-sm); color: var(--dim); }
+.sw { display: inline-block; width: 10px; height: 10px; vertical-align: -1px; margin-right: 6px; }
+.sw.m { background: var(--mppi); } .sw.p { background: var(--policy); }
+
+/* counters */
+.counters { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+.counter { background: var(--pane); padding: var(--s3); display: grid; gap: 2px; }
+.counter .v { font: 700 var(--t-xl)/1.1 var(--font-head); }
+.counter .v.run { color: var(--info); } .counter .v.bad { color: var(--bad); } .counter .v.ok { color: var(--mppi); }
+
+/* pills */
+.pill { display: inline-block; padding: 0 6px; font-size: var(--t-xs); text-transform: uppercase; letter-spacing: 0.06em; border: 1px solid currentColor; white-space: nowrap; }
+.pill.running, .pill.submitted, .pill.doing { color: var(--info); background: var(--info-soft); }
+.pill.pending, .pill.queued, .pill.todo, .pill.open { color: var(--dim); }
+.pill.finished, .pill.done, .pill.supported { color: var(--mppi); background: var(--mppi-soft); }
+.pill.failed, .pill.refuted, .pill.cancelled { color: var(--bad); background: var(--bad-soft); }
+.pill.weak, .pill.partial, .pill.cut { color: var(--policy); background: var(--policy-soft); }
+
+/* claims */
+.claims { display: grid; gap: 0; }
+.claim { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) auto; gap: var(--s1) var(--s3); padding: var(--s3) 0; border-top: 1px solid var(--line); align-items: baseline; }
+.claim:first-child { border-top: 0; padding-top: 0; }
+.claim .id { color: var(--mppi); font-weight: 700; }
+.claim .ev { grid-column: 2 / 4; color: var(--dim); font-size: var(--t-sm); white-space: pre-wrap; }
+
+/* tables */
+.tbox { overflow-x: auto; border: 1px solid var(--line); background: var(--pane); }
+table { border-collapse: collapse; width: 100%; font-size: var(--t-sm); }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+th { color: var(--dim); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; font-size: var(--t-xs); background: var(--pane-2); position: sticky; top: 0; }
+td.num, th.num { text-align: right; }
+td.m { color: var(--mppi); } td.p { color: var(--policy); }
+td.wrap { white-space: normal; min-width: 220px; max-width: 460px; overflow-wrap: anywhere; }
+tr.click { cursor: pointer; }
+tr.click:hover td { background: var(--pane-2); }
+tr.open td { background: var(--pane-2); }
+tr.detail td { background: var(--bg); white-space: normal; }
+.muted { color: var(--dim); }
+.faint { color: var(--faint); }
+.delta.pos { color: var(--mppi); } .delta.neg { color: var(--bad); }
+.stepbar { display: inline-block; width: 64px; height: 6px; background: var(--line-2); vertical-align: 1px; margin-right: 6px; position: relative; }
+.stepbar > i { position: absolute; inset: 0 auto 0 0; background: var(--dim); }
+.stepbar.full > i { background: var(--mppi); }
+
+/* filters */
+.filters { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s3); align-items: center; }
+.filters label { display: inline-flex; gap: 6px; align-items: center; color: var(--dim); font-size: var(--t-sm); }
+select, input[type="text"], textarea { background: var(--pane-2); border: 1px solid var(--line-2); padding: 4px 8px; min-width: 0; }
+input[type="text"] { width: min(260px, 100%); }
+.btn { background: transparent; border: 1px solid var(--line-2); padding: 4px 10px; cursor: pointer; color: var(--ink); }
+.btn:hover { border-color: var(--mppi); color: var(--mppi); }
+.btn.quiet { border-color: transparent; color: var(--dim); padding: 0 4px; }
+
+/* detail */
+.detail-grid { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: var(--s2) 0; }
+@media (max-width: 860px) { .detail-grid { grid-template-columns: minmax(0, 1fr); } }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px var(--s3); font-size: var(--t-sm); }
+.kv dt { color: var(--dim); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+svg text { fill: var(--dim); font-family: var(--font); font-size: 10px; }
+
+/* empty / notes */
+.empty { border: 1px dashed var(--line-2); padding: var(--s4); color: var(--dim); display: grid; gap: var(--s2); }
+.empty .prompt { color: var(--mppi); }
+.empty code, .note code { color: var(--ink); background: var(--pane-2); padding: 0 4px; }
+.note { font-size: var(--t-sm); color: var(--dim); }
+.banner { border: 1px solid var(--policy); color: var(--policy); background: var(--policy-soft); padding: var(--s2) var(--s3); font-size: var(--t-sm); }
+
+/* log */
+.entry { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: var(--s1) var(--s4); padding: var(--s3) 0; border-top: 1px solid var(--line); }
+.entry:first-child { border-top: 0; }
+.entry .date { color: var(--dim); }
+.entry .body { white-space: pre-wrap; color: var(--ink); font-size: var(--t-sm); }
+@media (max-width: 560px) { .entry { grid-template-columns: minmax(0, 1fr); } .claim { grid-template-columns: 2.8em minmax(0, 1fr); } .claim .pill { grid-column: 2; justify-self: start; } .claim .ev { grid-column: 1 / 3; } }
+
+/* todos */
+.todo { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s3); padding: var(--s2) 0; border-top: 1px solid var(--line); align-items: baseline; }
+.todo:first-child { border-top: 0; }
+.todo.done .txt { color: var(--faint); text-decoration: line-through; }
+.addrow { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.addrow input { flex: 1 1 220px; width: auto; }
+</style>
+
+<div class="wrap">
+  <div class="top">
+    <h1 class="brand"><span class="host">fb_jepa</span><span class="path">@jz:~/tracker</span><span class="cur" aria-hidden="true"></span></h1>
+    <div class="statline" id="statline">
+      <span><span class="k">sync</span> <b id="st-checked">waiting for data</b></span>
+      <span><span class="k">runs</span> <b id="st-runs">0</b></span>
+      <span><span class="k">jobs</span> <b id="st-jobs">0 running · 0 pending</b></span>
+      <span><span class="k">queue</span> <b id="st-queue">0</b></span>
+    </div>
+  </div>
+
+  <nav aria-label="Sections">
+    <a href="#overview" data-tab="overview">overview</a>
+    <a href="#runs" data-tab="runs">runs</a>
+    <a href="#compare" data-tab="compare">compare</a>
+    <a href="#jobs" data-tab="jobs">jobs</a>
+    <a href="#log" data-tab="log">log</a>
+    <a href="#todo" data-tab="todo">todo</a>
+  </nav>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <!-- OVERVIEW -->
+  <section id="overview" class="sec" data-view="overview">
+    <p class="lede">Zero-shot RL from reward-free data: FB representations plus a latent world model, acting by MPPI planning in latent space. This console follows the experiments of the research plan (<code>docs/research_plan.md</code>) on Jean Zay.</p>
+    <div class="counters" id="counters"></div>
+    <div class="grid2">
+      <div class="pane">
+        <header><h2><span class="hash">#</span>Claims</h2><span class="label">what the paper must show</span></header>
+        <div class="claims" id="claims"></div>
+      </div>
+      <div class="pane">
+        <header><h2><span class="hash">#</span>Latest runs</h2><span class="legend"><span><span class="sw m"></span>MPPI</span><span><span class="sw p"></span>policy</span></span></header>
+        <div id="latest"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- RUNS -->
+  <section id="runs" class="sec" data-view="runs" hidden>
+    <header class="pane" style="gap: var(--s2)">
+      <h2><span class="hash">#</span>Runs</h2>
+      <p class="lede">One row per run folder. Scores are the mean over the environment's tasks, averaged over the last 10 evaluations (a single evaluation swings by about ±150). Click a row for per-task numbers and the learning curve.</p>
+      <div class="filters">
+        <label for="f-env">env <select id="f-env"><option value="">all</option><option>cheetah</option><option>walker</option><option>quadruped</option><option>antmaze</option></select></label>
+        <label for="f-fam">family <select id="f-fam"><option value="">all</option></select></label>
+        <label for="f-q">grep <input type="text" id="f-q" placeholder="flag, folder, note"></label>
+        <label for="f-hidden"><input type="checkbox" id="f-hidden"> show hidden</label>
+        <span class="legend"><span><span class="sw m"></span>MPPI</span><span><span class="sw p"></span>policy</span></span>
+      </div>
+    </header>
+    <div id="runs-body"></div>
+  </section>
+
+  <!-- COMPARE -->
+  <section id="compare" class="sec" data-view="compare" hidden>
+    <div class="pane" style="gap: var(--s2)">
+      <h2><span class="hash">#</span>Compare</h2>
+      <p class="lede">Runs grouped by family and flags. Each cell is mean ± std over the runs of that group (n = runs), MPPI in green and policy in amber. Groups with fewer than 3 runs are not evidence yet. Curated studies come first.</p>
+    </div>
+    <div id="studies"></div>
+    <div id="groups"></div>
+  </section>
+
+  <!-- JOBS -->
+  <section id="jobs" class="sec" data-view="jobs" hidden>
+    <div class="pane" style="gap: var(--s2)">
+      <h2><span class="hash">#</span>Jobs</h2>
+      <p class="lede">Slurm jobs of this repo on Jean Zay (training on H100 dev, eval-only on V100 dev) and the local queue of experiments waiting for a free slot. The dev limit is 10 jobs per QoS, shared with CLFB.</p>
+    </div>
+    <div class="pane"><header><h3>Queue</h3><span class="label" id="queue-when"></span></header><div id="queue-body"></div></div>
+    <div id="jobs-body"></div>
+  </section>
+
+  <!-- LOG -->
+  <section id="log" class="sec" data-view="log" hidden>
+    <div class="pane">
+      <header><h2><span class="hash">#</span>Log</h2><span class="label">newest first</span></header>
+      <div id="log-body"></div>
+    </div>
+  </section>
+
+  <!-- TODO -->
+  <section id="todo" class="sec" data-view="todo" hidden>
+    <div class="pane">
+      <header><h2><span class="hash">#</span>Todo</h2><span class="label">click a status to advance it</span></header>
+      <div class="addrow" id="todo-add" hidden>
+        <label for="todo-text" class="label" style="align-self:center">new</label>
+        <input type="text" id="todo-text" placeholder="what needs doing">
+        <button class="btn" id="todo-btn" type="button">Add</button>
+      </div>
+      <div id="todo-body"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  function el(tag, attrs, kids) {
+    var e = document.createElement(tag);
+    if (attrs) for (var k in attrs) {
+      if (k === "text") e.textContent = attrs[k];
+      else if (k === "cls") e.className = attrs[k];
+      else if (k === "html") { /* never used with data */ }
+      else e.setAttribute(k, attrs[k]);
+    }
+    (kids || []).forEach(function (c) { if (c != null) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return e;
+  }
+  function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+  function fmt(v) { return v == null ? "–" : Math.round(v).toString(); }
+  var SVGNS = "http://www.w3.org/2000/svg";
+  function svg(tag, attrs) { var e = document.createElementNS(SVGNS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); return e; }
+
+  var S = { runs: {}, curves: {}, jobs: {}, queue: null, checkedAt: null, tracking: {}, claims: [], studies: [], updates: [], todos: [],
+            loaded: {}, canWrite: false, openRun: null, db: null };
+
+  /* ---------- routing ---------- */
+  var TABS = ["overview", "runs", "compare", "jobs", "log", "todo"];
+  function route() {
+    var t = (location.hash || "").replace("#", "");
+    if (TABS.indexOf(t) < 0) t = "overview";
+    document.querySelectorAll("[data-view]").forEach(function (s) { s.hidden = s.getAttribute("data-view") !== t; });
+    document.querySelectorAll("nav a").forEach(function (a) { if (a.getAttribute("data-tab") === t) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
+  }
+  window.addEventListener("hashchange", route);
+  route();
+
+  /* ---------- derived ---------- */
+  function track(folder) { return S.tracking[folder] || {}; }
+  function runList() {
+    return Object.keys(S.runs).map(function (k) {
+      var r = S.runs[k], t = track(k);
+      return Object.assign({}, r, { family: t.family || r.family, variant: t.variant || r.variant, title: t.title || "", note: t.note || "", hidden: !!t.hidden });
+    }).sort(function (a, b) { return (b.folder || "").localeCompare(a.folder || ""); });
+  }
+  function stats(vals) {
+    vals = vals.filter(function (v) { return v != null; });
+    if (!vals.length) return null;
+    var m = vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
+    var sd = vals.length > 1 ? Math.sqrt(vals.reduce(function (a, b) { return a + (b - m) * (b - m); }, 0) / (vals.length - 1)) : null;
+    return { m: m, sd: sd, n: vals.length };
+  }
+  function statText(s) { return s ? fmt(s.m) + (s.sd != null ? "±" + fmt(s.sd) : "") : "–"; }
+
+  /* ---------- charts ---------- */
+  function curveSvg(c, w, h, axes) {
+    var padL = axes ? 34 : 1, padB = axes ? 18 : 1, padT = axes ? 6 : 1, padR = axes ? 8 : 1;
+    var s = svg("svg", { viewBox: "0 0 " + w + " " + h, width: w, height: h, role: "img", "aria-label": "learning curve" });
+    s.style.maxWidth = "100%";
+    var xmax = Math.max(1e6, (c && c.s && c.s.length) ? c.s[c.s.length - 1] : 1e6);
+    var X = function (x) { return padL + (x / xmax) * (w - padL - padR); };
+    var Y = function (y) { return padT + (1 - Math.min(1000, Math.max(0, y)) / 1000) * (h - padT - padB); };
+    if (axes) {
+      [0, 250, 500, 750, 1000].forEach(function (v) {
+        s.appendChild(svg("line", { x1: padL, x2: w - padR, y1: Y(v), y2: Y(v), stroke: "var(--line)", "stroke-width": 1, fill: "none" }));
+        var t = svg("text", { x: padL - 6, y: Y(v) + 3, "text-anchor": "end" }); t.textContent = v; s.appendChild(t);
+      });
+      [0, 250000, 500000, 750000, 1000000].forEach(function (v) {
+        if (v > xmax) return;
+        var t = svg("text", { x: X(v), y: h - 4, "text-anchor": v === 0 ? "start" : (v === xmax ? "end" : "middle") }); t.textContent = v === 0 ? "0" : (v / 1000) + "k"; s.appendChild(t);
+      });
+    } else {
+      s.appendChild(svg("line", { x1: 0, x2: w, y1: h - 1, y2: h - 1, stroke: "var(--line)", "stroke-width": 1, fill: "none" }));
+    }
+    if (!c || !c.s) return s;
+    [["p", "var(--policy)"], ["m", "var(--mppi)"]].forEach(function (pair) {
+      var ys = c[pair[0]]; if (!ys) return;
+      var pts = [];
+      ys.forEach(function (y, i) { if (y != null) pts.push(X(c.s[i]).toFixed(1) + "," + Y(y).toFixed(1)); });
+      if (pts.length < 2) return;
+      s.appendChild(svg("polyline", { points: pts.join(" "), fill: "none", stroke: pair[1], "stroke-width": axes ? 1.6 : 1.2, "stroke-linejoin": "round" }));
+      var last = pts[pts.length - 1].split(",");
+      s.appendChild(svg("circle", { cx: last[0], cy: last[1], r: axes ? 2.6 : 1.8, fill: pair[1] }));
+    });
+    return s;
+  }
+
+  /* ---------- status line + overview ---------- */
+  function jobCounts() {
+    var c = { running: 0, pending: 0, failed: 0, finished: 0, cancelled: 0 };
+    Object.keys(S.jobs).forEach(function (k) { var j = S.jobs[k]; if (j.children) return; c[j.status] = (c[j.status] || 0) + 1; });
+    return c;
+  }
+  function renderStatus() {
+    var c = jobCounts();
+    $("st-checked").textContent = S.checkedAt ? S.checkedAt.replace("T", " ").replace("Z", " UTC") : (S.loaded.snapshot ? "never" : "waiting for data");
+    $("st-runs").textContent = Object.keys(S.runs).length;
+    $("st-jobs").textContent = c.running + " running · " + c.pending + " pending" + (c.failed ? " · " + c.failed + " failed" : "");
+    var q = S.queue && S.queue.entries ? S.queue.entries.filter(function (e) { return e.state === "queued"; }).length : 0;
+    $("st-queue").textContent = q + " waiting";
+    var box = $("counters"); clear(box);
+    var runs = runList().filter(function (r) { return !r.hidden; });
+    var complete = runs.filter(function (r) { return r.complete; }).length;
+    [["runs", runs.length, ""], ["complete (1M)", complete, "ok"], ["running", c.running, "run"], ["pending", c.pending, ""], ["failed", c.failed, c.failed ? "bad" : ""], ["queued", q, ""]].forEach(function (x) {
+      box.appendChild(el("div", { cls: "counter" }, [el("span", { cls: "label", text: x[0] }), el("span", { cls: "v " + x[2], text: String(x[1]) })]));
+    });
+  }
+  function renderClaims() {
+    var box = $("claims"); clear(box);
+    if (!S.claims.length) {
+      box.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: S.loaded.claims ? "$ claims: none yet" : "$ loading claims…" }),
+        el("span", { text: "Claims C1–C5 of the research plan appear here with their status and evidence. Claude writes them to the database (collection claims)." })]));
+      return;
+    }
+    S.claims.forEach(function (c) {
+      box.appendChild(el("div", { cls: "claim" }, [
+        el("span", { cls: "id", text: c.id }), el("h3", { text: c.title || "" }), el("span", { cls: "pill " + (c.status || "open"), text: c.status || "open" }),
+        el("span", { cls: "ev", text: c.evidence || "" })]));
+    });
+  }
+  function renderLatest() {
+    var box = $("latest"); clear(box);
+    var runs = runList().filter(function (r) { return !r.hidden; }).slice(0, 8);
+    if (!runs.length) {
+      box.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: S.loaded.snapshot ? "$ ls runs/  (empty)" : "$ ls runs/  …" }),
+        el("span", { text: "The tracker starts clean on 2026-11-13: earlier runs stay in the local hpc/ copy. New runs appear here once a job writes its first evaluation and the status is pushed." })]));
+      return;
+    }
+    var t = el("table");
+    t.appendChild(el("thead", null, [el("tr", null, [el("th", { text: "run" }), el("th", { text: "env" }), el("th", { cls: "num", text: "MPPI" }), el("th", { cls: "num", text: "policy" }), el("th", { text: "curve" })])]));
+    var tb = el("tbody");
+    runs.forEach(function (r) {
+      var f = r.final || {};
+      var tr = el("tr", { cls: "click", tabindex: "0" }, [el("td", { text: (r.title || r.family) + "  " + (r.date || "").slice(5) }), el("td", { text: r.env || "" }),
+        el("td", { cls: "num m", text: fmt(f.mppi) }), el("td", { cls: "num p", text: fmt(f.policy) }), el("td", null, [curveSvg(S.curves[r.folder], 110, 26, false)])]);
+      tr.addEventListener("click", function () { S.openRun = r.folder; location.hash = "#runs"; renderRuns(); });
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    box.appendChild(el("div", { cls: "tbox" }, [t]));
+  }
+
+  /* ---------- runs ---------- */
+  function renderFamilies() {
+    var sel = $("f-fam"), cur = sel.value, fams = {};
+    runList().forEach(function (r) { fams[r.family] = 1; });
+    clear(sel); sel.appendChild(el("option", { value: "", text: "all" }));
+    Object.keys(fams).sort().forEach(function (f) { sel.appendChild(el("option", { value: f, text: f })); });
+    sel.value = fams[cur] ? cur : "";
+  }
+  function runDetail(r) {
+    var td = el("td", { colspan: "9" });
+    var g = el("div", { cls: "detail-grid" });
+    var left = el("div", { style: "display:grid;gap:12px;min-width:0" });
+    left.appendChild(curveSvg(S.curves[r.folder], 520, 190, true));
+    var kv = el("dl", { cls: "kv" });
+    [["folder", r.folder], ["family", r.family], ["env", r.env + (r.task ? " / " + r.task : "")], ["seed", r.seed == null ? "not recorded" : r.seed],
+     ["evals", r.nEvals + " (last step " + (r.lastStep || 0) + ")"], ["mode", r.mode], ["best eval", "MPPI " + fmt((r.best || {}).mppi) + " · policy " + fmt((r.best || {}).policy)]].forEach(function (x) {
+      kv.appendChild(el("dt", { text: x[0] })); kv.appendChild(el("dd", { text: String(x[1]) }));
+    });
+    var flags = r.flags || {};
+    Object.keys(flags).sort().forEach(function (k) { kv.appendChild(el("dt", { text: k })); kv.appendChild(el("dd", { text: flags[k] })); });
+    left.appendChild(kv);
+    if (r.note) left.appendChild(el("p", { cls: "note", text: r.note }));
+    g.appendChild(left);
+    var tasks = r.tasks || {};
+    var names = Object.keys(tasks);
+    if (names.length) {
+      var t = el("table");
+      t.appendChild(el("thead", null, [el("tr", null, [el("th", { text: "task" }), el("th", { cls: "num", text: "MPPI" }), el("th", { cls: "num", text: "policy" }), el("th", { cls: "num", text: "Δ" }), el("th", { cls: "num", text: "corr" })])]));
+      var tb = el("tbody");
+      names.forEach(function (n) {
+        var v = tasks[n] || {}, d = (v.mppi != null && v.policy != null) ? v.mppi - v.policy : null;
+        tb.appendChild(el("tr", null, [el("td", { text: n }), el("td", { cls: "num m", text: fmt(v.mppi) }), el("td", { cls: "num p", text: fmt(v.policy) }),
+          el("td", { cls: "num delta " + (d == null ? "" : d >= 0 ? "pos" : "neg"), text: d == null ? "–" : (d >= 0 ? "+" : "") + Math.round(d) }),
+          el("td", { cls: "num muted", text: r.corr && r.corr[n] != null ? r.corr[n].toFixed(2) : "–" })]));
+      });
+      t.appendChild(tb);
+      g.appendChild(el("div", { cls: "tbox" }, [t]));
+    }
+    td.appendChild(g);
+    return el("tr", { cls: "detail" }, [td]);
+  }
+  function renderRuns() {
+    renderFamilies();
+    var box = $("runs-body"); clear(box);
+    var env = $("f-env").value, fam = $("f-fam").value, q = $("f-q").value.trim().toLowerCase(), showH = $("f-hidden").checked;
+    var runs = runList().filter(function (r) {
+      if (r.hidden && !showH) return false;
+      if (env && r.env !== env) return false;
+      if (fam && r.family !== fam) return false;
+      if (q && (r.folder + " " + r.variant + " " + r.note + " " + r.title).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+    if (!runs.length) {
+      box.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: "$ grep runs  (no match)" }),
+        el("span", { text: Object.keys(S.runs).length ? "No run matches these filters." : "No run tracked yet. Runs submitted from the queue appear after the next status push." })]));
+      return;
+    }
+    var t = el("table");
+    t.appendChild(el("thead", null, [el("tr", null, ["date", "family", "env", "flags", "steps", "MPPI", "policy", "Δ", "curve"].map(function (h, i) {
+      return el("th", { cls: (i >= 5 && i <= 7) ? "num" : "", text: h });
+    }))]));
+    var tb = el("tbody");
+    runs.forEach(function (r) {
+      var f = r.final || {}, d = (f.mppi != null && f.policy != null) ? f.mppi - f.policy : null;
+      var pct = Math.min(1, (r.lastStep || 0) / 1e6);
+      var bar = el("span", { cls: "stepbar" + (r.complete ? " full" : "") }, [el("i", { style: "width:" + (pct * 100).toFixed(0) + "%" })]);
+      var tr = el("tr", { cls: "click" + (S.openRun === r.folder ? " open" : ""), tabindex: "0", "aria-expanded": S.openRun === r.folder ? "true" : "false" }, [
+        el("td", { text: (r.date || "") + " " + (r.time || "").slice(0, 5) }),
+        el("td", null, [r.title ? el("span", { text: r.title + " " }) : null, el("span", { cls: r.title ? "muted" : "", text: r.family }), r.hidden ? el("span", { cls: "faint", text: " hidden" }) : null]),
+        el("td", { text: (r.env || "") + (r.task ? "/" + r.task : "") }),
+        el("td", { cls: "wrap muted", text: r.variant }),
+        el("td", null, [bar, el("span", { cls: "muted", text: Math.round((r.lastStep || 0) / 1000) + "k" })]),
+        el("td", { cls: "num m", text: fmt(f.mppi) }), el("td", { cls: "num p", text: fmt(f.policy) }),
+        el("td", { cls: "num delta " + (d == null ? "" : d >= 0 ? "pos" : "neg"), text: d == null ? "–" : (d >= 0 ? "+" : "") + Math.round(d) }),
+        el("td", null, [curveSvg(S.curves[r.folder], 110, 26, false)])]);
+      function toggle() { S.openRun = S.openRun === r.folder ? null : r.folder; renderRuns(); }
+      tr.addEventListener("click", toggle);
+      tr.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+      tb.appendChild(tr);
+      if (S.openRun === r.folder) tb.appendChild(runDetail(r));
+    });
+    t.appendChild(tb);
+    box.appendChild(el("div", { cls: "tbox" }, [t]));
+  }
+  ["f-env", "f-fam", "f-hidden"].forEach(function (id) { $(id).addEventListener("change", renderRuns); });
+  $("f-q").addEventListener("input", renderRuns);
+
+  /* ---------- compare ---------- */
+  var ENVS = ["cheetah", "walker", "quadruped", "antmaze"];
+  function groupTable(rows, envs) {
+    var t = el("table");
+    var head = [el("th", { text: "variant" })];
+    envs.forEach(function (e) { head.push(el("th", { cls: "num", text: e })); });
+    t.appendChild(el("thead", null, [el("tr", null, head)]));
+    var tb = el("tbody");
+    rows.forEach(function (row) {
+      var tds = [el("td", { cls: "wrap", text: row.label })];
+      envs.forEach(function (e) {
+        var rs = row.runs.filter(function (r) { return r.env === e; });
+        var sm = stats(rs.map(function (r) { return (r.final || {}).mppi; })), sp = stats(rs.map(function (r) { return (r.final || {}).policy; }));
+        if (!rs.length) { tds.push(el("td", { cls: "num faint", text: "·" })); return; }
+        var n = rs.length, cut = rs.filter(function (r) { return !r.complete; }).length;
+        tds.push(el("td", { cls: "num" }, [
+          sm ? el("div", { cls: "m", text: "M " + statText(sm) }) : null,
+          sp ? el("div", { cls: "p", text: "P " + statText(sp) }) : null,
+          el("div", { cls: n < 3 ? "faint" : "muted", text: "n" + n + (cut ? " · " + cut + " cut" : "") })]));
+      });
+      tb.appendChild(el("tr", null, tds));
+    });
+    t.appendChild(tb);
+    return el("div", { cls: "tbox" }, [t]);
+  }
+  function renderCompare() {
+    var runs = runList().filter(function (r) { return !r.hidden && !r.task; });
+    var sb = $("studies"); clear(sb);
+    S.studies.forEach(function (st) {
+      var envs = st.envs && st.envs.length ? st.envs : ENVS;
+      var rows = (st.rows || []).map(function (row) {
+        return { label: row.label || (row.family + " " + (row.variant || "")), runs: runs.filter(function (r) { return r.family === row.family && (row.variant == null || r.variant === row.variant); }) };
+      });
+      var pane = el("div", { cls: "pane" }, [el("header", null, [el("h3", { text: st.title || st.id }), el("span", { cls: "label", text: "study" })]),
+        st.question ? el("p", { cls: "lede", text: st.question }) : null, groupTable(rows, envs), st.summary ? el("p", { cls: "note", text: st.summary }) : null]);
+      sb.appendChild(pane);
+    });
+    var gb = $("groups"); clear(gb);
+    if (!runs.length) {
+      gb.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: "$ compare  (nothing to group)" }),
+        el("span", { text: "Groups form automatically from the tracked runs: one table per method family, one row per flag setting, one column per environment." })]));
+      return;
+    }
+    var fams = {};
+    runs.forEach(function (r) { (fams[r.family] = fams[r.family] || {})[r.variant] = ((fams[r.family] || {})[r.variant] || []).concat([r]); });
+    Object.keys(fams).sort().forEach(function (f) {
+      var rows = Object.keys(fams[f]).sort().map(function (v) { return { label: v, runs: fams[f][v] }; });
+      var envs = ENVS.filter(function (e) { return runs.some(function (r) { return r.family === f && r.env === e; }); });
+      gb.appendChild(el("div", { cls: "pane" }, [el("header", null, [el("h3", { text: f }), el("span", { cls: "label", text: rows.length + " setting" + (rows.length > 1 ? "s" : "") })]), groupTable(rows, envs)]));
+    });
+  }
+
+  /* ---------- jobs ---------- */
+  function renderJobs() {
+    var qb = $("queue-body"); clear(qb);
+    var entries = S.queue && S.queue.entries ? S.queue.entries.filter(function (e) { return e.state === "queued" || e.state === "submitted" || e.state === "running"; }) : [];
+    $("queue-when").textContent = S.queue && S.queue.checkedAt ? "as of " + S.queue.checkedAt.replace("T", " ").replace("Z", " UTC") : "";
+    if (!entries.length) {
+      qb.appendChild(el("p", { cls: "note", text: "Nothing waiting. Experiments are added with tools/queue.py add and sent as slots free up." }));
+    } else {
+      var t = el("table");
+      t.appendChild(el("thead", null, [el("tr", null, ["name", "state", "gpu", "job", "title", "commands"].map(function (h) { return el("th", { text: h }); }))]));
+      var tb = el("tbody");
+      entries.forEach(function (e) {
+        tb.appendChild(el("tr", null, [el("td", { text: e.name }), el("td", null, [el("span", { cls: "pill " + e.state, text: e.state })]), el("td", { text: e.gpu || "" }),
+          el("td", { text: e.job_id || "–" }), el("td", { cls: "wrap", text: e.title || "" }), el("td", { cls: "wrap muted", text: (e.cmds || []).join(" ; ") })]));
+      });
+      t.appendChild(tb); qb.appendChild(el("div", { cls: "tbox" }, [t]));
+    }
+    var jb = $("jobs-body"); clear(jb);
+    var jobs = Object.keys(S.jobs).map(function (k) { return S.jobs[k]; }).filter(function (j) { return !j.children; })
+      .sort(function (a, b) { return (b.submit || "").localeCompare(a.submit || "") || String(b.jobId).localeCompare(String(a.jobId)); });
+    if (!jobs.length) {
+      jb.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: S.loaded.snapshot ? "$ squeue -u $USER  (no fb_jepa jobs since 2026-11-13)" : "$ squeue …" }),
+        el("span", { text: "Jobs of this repo show here with their state, command, run folder and headline result." })]));
+      return;
+    }
+    var t2 = el("table");
+    t2.appendChild(el("thead", null, [el("tr", null, ["job", "state", "script", "command", "elapsed", "where / why", "result"].map(function (h) { return el("th", { text: h }); }))]));
+    var tb2 = el("tbody");
+    jobs.forEach(function (j) {
+      var why = j.status === "pending" ? (j.reason || "") : j.status === "running" ? (j.lastLine || j.node || "") : j.status === "failed" ? (j.err || j.state) : (j.node || "");
+      var res = j.results ? j.results.text || "" : "";
+      tb2.appendChild(el("tr", null, [el("td", { text: j.jobId }), el("td", null, [el("span", { cls: "pill " + j.status, text: j.status })]), el("td", { cls: "muted", text: j.script || "" }),
+        el("td", { cls: "wrap", text: j.command || "" }), el("td", { cls: "num", text: j.elapsed || "" }), el("td", { cls: "wrap muted", text: why }),
+        el("td", { cls: "wrap" }, [el("span", { text: res }), (j.runFolders || []).length ? el("div", { cls: "faint", text: j.runFolders.join(", ") }) : null])]));
+    });
+    t2.appendChild(tb2); jb.appendChild(el("div", { cls: "tbox" }, [t2]));
+  }
+
+  /* ---------- log + todo ---------- */
+  function renderLog() {
+    var box = $("log-body"); clear(box);
+    if (!S.updates.length) {
+      box.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: S.loaded.updates ? "$ tail log  (empty)" : "$ tail log …" }), el("span", { text: "Session notes and decisions are added here by Claude (collection updates)." })]));
+      return;
+    }
+    S.updates.forEach(function (u) {
+      box.appendChild(el("div", { cls: "entry" }, [el("span", { cls: "date", text: u.date || "" }), el("div", { style: "display:grid;gap:4px;min-width:0" }, [el("h3", { text: u.title || "" }), el("div", { cls: "body", text: u.body || "" })])]));
+    });
+  }
+  var NEXT = { todo: "doing", doing: "done", done: "todo" };
+  function renderTodos() {
+    $("todo-add").hidden = !S.canWrite;
+    var box = $("todo-body"); clear(box);
+    if (!S.todos.length) {
+      box.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: S.loaded.todos ? "$ todo  (nothing)" : "$ todo …" }), el("span", { text: S.canWrite ? "Add the first item above." : "No items yet." })]));
+      return;
+    }
+    S.todos.forEach(function (x) {
+      var st = x.status || "todo";
+      var pill = el("button", { cls: "btn quiet", type: "button", "aria-label": "status " + st + ", advance" }, [el("span", { cls: "pill " + st, text: st })]);
+      if (S.canWrite && S.db) pill.addEventListener("click", function () { S.db.collection("todos").doc(x.id).update({ status: NEXT[st] || "todo" }).catch(function () {}); });
+      else pill.disabled = true;
+      box.appendChild(el("div", { cls: "todo " + st }, [pill, el("span", { cls: "txt", text: x.text || "" })]));
+    });
+  }
+  function addTodo() {
+    var v = $("todo-text").value.trim();
+    if (!v || !S.db) return;
+    S.db.collection("todos").add({ text: v, status: "todo", created: new Date().toISOString() }).then(function () { $("todo-text").value = ""; })
+      .catch(function () { $("banner").hidden = false; $("banner").textContent = "Could not add the item: you may only have view access to this tracker."; });
+  }
+  $("todo-btn").addEventListener("click", addTodo);
+  $("todo-text").addEventListener("keydown", function (e) { if (e.key === "Enter") addTodo(); });
+
+  function renderAll() { renderStatus(); renderClaims(); renderLatest(); renderRuns(); renderCompare(); renderJobs(); renderLog(); renderTodos(); }
+  renderAll();
+
+  /* ---------- data ---------- */
+  var timer = setTimeout(function () {
+    if (!S.loaded.snapshot) { $("banner").hidden = false; $("banner").textContent = "The tracker database has not answered yet. What is shown may be empty or out of date."; }
+  }, 10000);
+  function docsOf(snap) { return snap.docs.map(function (d) { return Object.assign({ id: d.id }, d.data()); }); }
+  function sub(db, name, fn) {
+    db.collection(name).onSnapshot(function (snap) {
+      S.loaded[name] = true; fn(docsOf(snap));
+      if (name === "snapshot" && !snap.metadata.fromCache) { clearTimeout(timer); $("banner").hidden = true; }
+      renderAll();
+    }, function () { S.loaded[name] = true; renderAll(); });
+  }
+  if (window.claude && claude.use) {
+    claude.use("db").then(function (db) {
+      if (!db) { $("banner").hidden = false; $("banner").textContent = "The tracker database is not available in this view. Open the page on claude.ai while signed in."; clearTimeout(timer); return; }
+      S.db = db;
+      claude.use("user").then(function (u) { S.canWrite = !!(u && u.can && u.can("data.write") !== false); renderTodos(); }).catch(function () {});
+      sub(db, "snapshot", function (docs) {
+        var runs = {}, curves = {}, jobs = {}, checked = null, queue = null;
+        docs.forEach(function (d) {
+          if (/^runs_\d+$/.test(d.id) && d.runs) Object.assign(runs, d.runs);
+          else if (/^curves_\d+$/.test(d.id) && d.curves) Object.assign(curves, d.curves);
+          else if (/^jobs_\d+$/.test(d.id) && d.jobs) { Object.assign(jobs, d.jobs); if (d.checkedAt && (!checked || d.checkedAt > checked)) checked = d.checkedAt; }
+          else if (d.id === "queue") queue = d;
+        });
+        S.runs = runs; S.curves = curves; S.jobs = jobs; S.checkedAt = checked; S.queue = queue;
+      });
+      sub(db, "tracking", function (docs) { var t = {}; docs.forEach(function (d) { t[d.folder || d.id] = d; }); S.tracking = t; });
+      sub(db, "claims", function (docs) { S.claims = docs.sort(function (a, b) { return (a.order || 0) - (b.order || 0) || a.id.localeCompare(b.id); }); });
+      sub(db, "studies", function (docs) { S.studies = docs.sort(function (a, b) { return (a.order || 0) - (b.order || 0); }); });
+      sub(db, "updates", function (docs) { S.updates = docs.sort(function (a, b) { return (b.date || "").localeCompare(a.date || "") || (b.id || "").localeCompare(a.id || ""); }); });
+      sub(db, "todos", function (docs) { S.todos = docs.sort(function (a, b) { return (a.created || "").localeCompare(b.created || ""); }); });
+    }).catch(function () {});
+  }
+})();
+</script>

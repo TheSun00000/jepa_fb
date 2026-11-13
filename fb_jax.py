@@ -1,10 +1,12 @@
 import os
 LOCAL = 'nazim' in os.getcwd()
+DATASET_FOLDER = '../offline_qd/datasets/d4rl/'
 if not LOCAL:
     os.environ['MUJOCO_GL'] = 'egl'
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
+    DATASET_FOLDER = '../fre_experiments/datasets/'
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -246,10 +248,10 @@ if __name__ == '__main__':
         if ENV_NAME == 'cheetah':
             STATE_DIM, ACTION_DIM = 17, 6
             NUM_TRAJECTORIES, TRAJECTORY_LEN = 10000, 1000
-            dataset = np.load('../offline_qd/datasets/d4rl/cheetah_rnd.npy', allow_pickle=True).item()
+            dataset = np.load(f'{DATASET_FOLDER}/cheetah_rnd.npy', allow_pickle=True).item()
             aux = np.concatenate((
-                np.load('../offline_qd/datasets/d4rl/aux_cheetah.npy').reshape(10000, 1000, 1),
-                np.load('../offline_qd/datasets/d4rl/angmomentum_aux_cheetah.npy').reshape(10000, 1000, 1),
+                np.load(f'{DATASET_FOLDER}/aux_cheetah.npy').reshape(10000, 1000, 1),
+                np.load(f'{DATASET_FOLDER}/angmomentum_aux_cheetah.npy').reshape(10000, 1000, 1),
             ), axis=-1)
             benchmarks = [
                 (cheetah_reward, 'vel10Back', -10),
@@ -262,10 +264,10 @@ if __name__ == '__main__':
         elif ENV_NAME == 'walker':
             STATE_DIM, ACTION_DIM = 24, 6
             NUM_TRAJECTORIES, TRAJECTORY_LEN = 10000, 1000
-            dataset = np.load('../offline_qd/datasets/d4rl/walker_rnd.npy', allow_pickle=True).item()
+            dataset = np.load(f'{DATASET_FOLDER}/walker_rnd.npy', allow_pickle=True).item()
             aux = np.concatenate((
-                np.load('../offline_qd/datasets/d4rl/aux_walker.npy').reshape(10000, 1000, 3),
-                np.load('../offline_qd/datasets/d4rl/angmomentum_aux_walker.npy').reshape(10000, 1000, 1),
+                np.load(f'{DATASET_FOLDER}/aux_walker.npy').reshape(10000, 1000, 3),
+                np.load(f'{DATASET_FOLDER}/angmomentum_aux_walker.npy').reshape(10000, 1000, 1),
             ), axis=-1)
             benchmarks = [
                 (walker_reward, 'stand',  0),
@@ -278,8 +280,8 @@ if __name__ == '__main__':
         elif ENV_NAME == 'quadruped':
             STATE_DIM, ACTION_DIM = 78, 12
             NUM_TRAJECTORIES, TRAJECTORY_LEN = 10000, 1001
-            dataset = np.load('../offline_qd/datasets/d4rl/quadruped_rnd_without_physics.npy', allow_pickle=True).item()
-            aux = np.load('../offline_qd/datasets/d4rl/aux_quadruped.npy', allow_pickle=True)
+            dataset = np.load(f'{DATASET_FOLDER}/quadruped_rnd_without_physics.npy', allow_pickle=True).item()
+            aux = np.load(f'{DATASET_FOLDER}/aux_quadruped.npy', allow_pickle=True)
             benchmarks = [
                 (quadruped_stand, 'stand', None),
                 (quadruped_walk,  'walk',  None),
@@ -412,11 +414,14 @@ if __name__ == '__main__':
     # Number of benchmarks rolled out in parallel during eval (each one needs NUM_EVALS env instances)
     EVAL_CHUNK = int(kwargs['eval_chunk']) if 'eval_chunk' in kwargs else N_BENCH
 
+    # Per-task columns: return (mean/std over the NUM_EVALS evals) and the reward correlation corr(B(s)^T z, R(s)),
+    # averaged over the NUM_EVALS task vectors inferred for that task.
     eval_logger = CSVLogger(
         filepath=f"{LOGS_FOLDER}/eval_log.csv",
         fieldnames=["step", "mean_over_tasks"]
                    + [f"{label}_{s}" for _, label, _ in benchmarks for s in ("mean", "std")]
-                   + ["time"],
+                   + [f"{label}_corr" for _, label, _ in benchmarks]
+                   + ["mean_corr_over_tasks", "time"],
     )
 
     # ── Replay buffer ─────────────────────────────────────────────────────────────
@@ -483,15 +488,54 @@ if __name__ == '__main__':
         def __call__(self, x):
             return jnp.tanh(nn.LayerNorm(epsilon=1e-5)(x))
 
+    # class ForwardMap(nn.Module):
+    #     """torch ForwardMap (preprocess=True). Returns (F1, F2)."""
+    #     hidden_dim:  int
+    #     feature_dim: int
+    #     z_dim:       int
+    #     add_trunk:   bool = False
+
+    #     @nn.compact
+    #     def __call__(self, obs, z, action):
+    #         # obs_action_net: Linear -> ntanh -> Linear -> relu
+    #         oa = TorchDense(self.hidden_dim)(jnp.concatenate([obs, action], axis=-1))
+    #         oa = NTanh()(oa)
+    #         oa = nn.relu(TorchDense(self.feature_dim)(oa))
+    #         # obs_z_net: Linear -> ntanh -> Linear -> relu
+    #         oz = TorchDense(self.hidden_dim)(jnp.concatenate([obs, z], axis=-1))
+    #         oz = NTanh()(oz)
+    #         oz = nn.relu(TorchDense(self.feature_dim)(oz))
+
+    #         h = jnp.concatenate([oa, oz], axis=-1)
+    #         if self.add_trunk:
+    #             h = nn.relu(TorchDense(self.hidden_dim)(h))
+
+    #         def head(h):
+    #             x = nn.relu(TorchDense(self.hidden_dim)(h))
+    #             return TorchDense(self.z_dim)(x)
+
+    #         return head(h), head(h)
+
     class ForwardMap(nn.Module):
-        """torch ForwardMap (preprocess=True). Returns (F1, F2)."""
-        hidden_dim:  int
-        feature_dim: int
-        z_dim:       int
-        add_trunk:   bool = False
+        """FB ForwardMap with an MLP in front of the observation, as if phi were inside F.
+        obs -> MLP (no normalization) -> phi; then the usual two branches on concat([phi, action]) and concat([phi, z])."""
+        hidden_dim:     int
+        feature_dim:    int
+        z_dim:          int
+        add_trunk:      bool = False
+        phi_layers:     int  = 2       # hidden layers of the MLP on the observation; 0 = the plain FB ForwardMap
+        phi_hidden_dim: int  = 64
+        phi_out_dim:    int  = 50
 
         @nn.compact
         def __call__(self, obs, z, action):
+            # MLP on the observation only: [Linear -> relu] x phi_layers -> Linear. No LayerNorm, no projection.
+            if self.phi_layers > 0:
+                x = NTanh()(TorchDense(self.phi_hidden_dim)(obs))
+                for _ in range(self.phi_layers - 1):
+                    x = nn.relu(TorchDense(self.phi_hidden_dim)(x))
+                obs = TorchDense(self.phi_out_dim)(x)
+
             # obs_action_net: Linear -> ntanh -> Linear -> relu
             oa = TorchDense(self.hidden_dim)(jnp.concatenate([obs, action], axis=-1))
             oa = NTanh()(oa)
@@ -648,12 +692,17 @@ if __name__ == '__main__':
 
         @partial(jax.jit, static_argnames=("self",))
         def infer_z(self, backward_params, obs, reward):
-            """z = E[r(s) B(s)], normalized (torch infer_meta_from_obs_and_rewards)."""
+            """z = E[r(s) B(s)], normalized (torch infer_meta_from_obs_and_rewards).
+            Also returns corr(B(s)^T z, r(s)) on the same samples: how well the linear reconstruction
+            of the reward in B-space (B^T z) matches the true reward."""
             B = self.backward_net.apply({'params': backward_params}, obs)
             z = reward @ B / reward.shape[0]
             if self.cfg.norm_z:
                 z = math.sqrt(self.cfg.z_dim) * normalize(z)
-            return z
+            pred = B @ z
+            pc, rc = pred - pred.mean(), reward - reward.mean()
+            corr = (pc * rc).mean() / (pc.std() * rc.std() + 1e-8)
+            return z, corr
 
         @partial(jax.jit, static_argnames=("self",))
         def implicit_reward(self, backward_params, obs, expectation_obs, z):
@@ -871,23 +920,26 @@ if __name__ == '__main__':
         axs[b, 2].set_title('Agent Trajectory')
 
     def run_benchmark(train_state, steps, make_plot):
+        """Zero-shot evaluation on all tasks. For each task and each of the NUM_EVALS evals, a fresh task vector is
+        inferred from 10k dataset states. Returns per-task (mean return, std, corr(B^T z, R))."""
         backward_params = train_state.fb_params['backward']
 
         if make_plot:
             fig, axs = plt.subplots(N_BENCH, 3, figsize=(15, N_BENCH * 4))
 
-        means, stds = np.zeros(N_BENCH), np.zeros(N_BENCH)
+        means, stds, corrs = np.zeros(N_BENCH), np.zeros(N_BENCH), np.zeros(N_BENCH)
         for start in range(0, N_BENCH, EVAL_CHUNK):
             ids = list(range(start, min(start + EVAL_CHUNK, N_BENCH)))
 
             # one z per (benchmark, eval): each is inferred from a fresh batch of 10k reward-labelled states
-            zs = []
+            zs, cs = [], []
             for b in ids:
                 reward_fn, _, param = benchmarks[b]
                 for _ in range(NUM_EVALS):
                     eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), 10_000)
-                    zs.append(agent.infer_z(backward_params, eval_obs, reward_fn(eval_aux, param)))
-            zs = jnp.stack(zs)
+                    z, corr = agent.infer_z(backward_params, eval_obs, reward_fn(eval_aux, param))
+                    zs.append(z); cs.append(corr)
+            zs, cs = jnp.stack(zs), np.asarray(jnp.stack(cs))
 
             obs_traj, aux_traj, phys_traj = rollout_batch(train_state.actor_params, zs)
 
@@ -905,7 +957,8 @@ if __name__ == '__main__':
                 print('\tRewards:', trajectory_rewards.tolist())
                 print('\tmean:', trajectory_rewards.mean())
                 print('\tstd:',  trajectory_rewards.std(ddof=1))
-                means[b], stds[b] = trajectory_rewards.mean(), trajectory_rewards.std(ddof=1)
+                print('\tcorr(B^T z, R):', float(cs[sl].mean()))
+                means[b], stds[b], corrs[b] = trajectory_rewards.mean(), trajectory_rewards.std(ddof=1), cs[sl].mean()
 
                 if make_plot:
                     plot_benchmark(axs, b, zs[(j + 1) * NUM_EVALS - 1], obs_traj[sl], aux_traj[sl],
@@ -916,7 +969,7 @@ if __name__ == '__main__':
             plt.savefig(f"{LOGS_FOLDER}/benchmark-steps:{steps}.png")
             plt.close()
 
-        return means, stds
+        return means, stds, corrs
 
     def save_agent(train_state, path):
         state = {
@@ -948,13 +1001,15 @@ if __name__ == '__main__':
         if (steps + 1) % EVAL_EACH_STEPS == 0:
             make_plot = (n_evals % PLOT_EACH_EVALS == 0)
             start_time = time.time()
-            means, stds = run_benchmark(train_state, num_updates, make_plot)
+            means, stds, corrs = run_benchmark(train_state, num_updates, make_plot)
             n_evals += 1
 
-            eval_row = {'step': num_updates, 'mean_over_tasks': float(means.mean()), 'time': time.time() - start_time}
+            eval_row = {'step': num_updates, 'mean_over_tasks': float(means.mean()),
+                        'mean_corr_over_tasks': float(corrs.mean()), 'time': time.time() - start_time}
             for i, (_, label, _) in enumerate(benchmarks):
                 eval_row[f'{label}_mean'] = float(means[i])
                 eval_row[f'{label}_std']  = float(stds[i])
+                eval_row[f'{label}_corr'] = float(corrs[i])
             eval_logger.log(eval_row)
 
             rewards_logs = np.concatenate((rewards_logs, means.reshape(-1, 1)), axis=-1)

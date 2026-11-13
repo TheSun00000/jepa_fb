@@ -248,10 +248,10 @@ if __name__ == '__main__':
         if ENV_NAME == 'cheetah':
             STATE_DIM, ACTION_DIM = 17, 6
             NUM_TRAJECTORIES, TRAJECTORY_LEN = 10000, 1000
-            dataset = np.load('../fre_experiments/datasets/cheetah_rnd.npy', allow_pickle=True).item()
+            dataset = np.load(f'{DATASET_FOLDER}/cheetah_rnd.npy', allow_pickle=True).item()
             aux = np.concatenate((
-                np.load('../fre_experiments/datasets/aux_cheetah.npy').reshape(10000, 1000, 1),
-                np.load('../fre_experiments/datasets/angmomentum_aux_cheetah.npy').reshape(10000, 1000, 1),
+                np.load(f'{DATASET_FOLDER}/aux_cheetah.npy').reshape(10000, 1000, 1),
+                np.load(f'{DATASET_FOLDER}/angmomentum_aux_cheetah.npy').reshape(10000, 1000, 1),
             ), axis=-1)
             benchmarks = [
                 (cheetah_reward, 'vel10Back', -10),
@@ -264,10 +264,10 @@ if __name__ == '__main__':
         elif ENV_NAME == 'walker':
             STATE_DIM, ACTION_DIM = 24, 6
             NUM_TRAJECTORIES, TRAJECTORY_LEN = 10000, 1000
-            dataset = np.load('../fre_experiments/datasets/walker_rnd.npy', allow_pickle=True).item()
+            dataset = np.load(f'{DATASET_FOLDER}/walker_rnd.npy', allow_pickle=True).item()
             aux = np.concatenate((
-                np.load('../fre_experiments/datasets/aux_walker.npy').reshape(10000, 1000, 3),
-                np.load('../fre_experiments/datasets/angmomentum_aux_walker.npy').reshape(10000, 1000, 1),
+                np.load(f'{DATASET_FOLDER}/aux_walker.npy').reshape(10000, 1000, 3),
+                np.load(f'{DATASET_FOLDER}/angmomentum_aux_walker.npy').reshape(10000, 1000, 1),
             ), axis=-1)
             benchmarks = [
                 (walker_reward, 'stand',  0),
@@ -280,8 +280,8 @@ if __name__ == '__main__':
         elif ENV_NAME == 'quadruped':
             STATE_DIM, ACTION_DIM = 78, 12
             NUM_TRAJECTORIES, TRAJECTORY_LEN = 10000, 1001
-            dataset = np.load('../fre_experiments/datasets/quadruped_rnd_without_physics.npy', allow_pickle=True).item()
-            aux = np.load('../fre_experiments/datasets/aux_quadruped.npy', allow_pickle=True)
+            dataset = np.load(f'{DATASET_FOLDER}/quadruped_rnd_without_physics.npy', allow_pickle=True).item()
+            aux = np.load(f'{DATASET_FOLDER}/aux_quadruped.npy', allow_pickle=True)
             benchmarks = [
                 (quadruped_stand, 'stand', None),
                 (quadruped_walk,  'walk',  None),
@@ -488,6 +488,13 @@ if __name__ == '__main__':
             aux = None if self.aux is None else self.aux[i]
             return self.obs[i], self.actions[i], self.obs[i + 1], aux
 
+        def sample_labeled(self, random_key, sample_size: int):
+            """Single transitions with the labelled reward of the transition, R(aux_{t+1}) (what the reward head is
+            trained to predict). Returns (obs, actions, next_obs, aux of the current state, reward)."""
+            i   = self.valid_idx[jax.random.randint(random_key, (sample_size,), 0, self.size)]
+            aux = None if self.aux is None else self.aux[i]
+            return self.obs[i], self.actions[i], self.obs[i + 1], aux, self.rewards[i + 1]
+
         def sample_sequences(self, random_key, batch_size: int, horizon: Optional[int] = None):
             """Returns obs (H+1, B, obs_dim), actions (H, B, action_dim), rewards (H, B, 1)."""
             horizon = self.horizon if horizon is None else horizon
@@ -644,6 +651,7 @@ if __name__ == '__main__':
             x = jnp.concatenate([h, a], axis=-1)
             h_next = self._bound(h + self.dynamics.apply({'params': params['dynamics']}, x))
             return h_next, self.reward_net.apply({'params': params['reward']}, x)
+            # return h_next, self.reward_net.apply({'params': params['reward']}, jax.lax.stop_gradient(x)) # WARNING
 
         def q(self, params, h, a):
             """(Q1(h, a), Q2(h, a)); `params` can be the online or the target parameters."""
@@ -658,6 +666,20 @@ if __name__ == '__main__':
         @partial(jax.jit, static_argnames=("self",))
         def predict_reward(self, params, obs, action):
             return self.next(params, self.encode(params['encoder'], obs), action)[1]
+
+        # ── linear reward reconstruction from the features phi(s) = h (as in the successor-feature script) ──
+
+        @partial(jax.jit, static_argnames=("self",))
+        def infer_z(self, encoder_params, obs, reward):
+            """z = sqrt(d) * normalize(mean_s phi(s) R(s)), with phi the encoder. obs (N, obs_dim), reward (N,)."""
+            phi = self.encode(encoder_params, obs)                                   # (N, L)
+            z   = (reward[:, None] * phi).mean(axis=0)
+            return math.sqrt(self.cfg.latent_dim) * l2_normalize(z)
+
+        @partial(jax.jit, static_argnames=("self",))
+        def linear_reward(self, encoder_params, obs, z):
+            """phi(s)^T z / d: a cosine in [-1, 1]."""
+            return jnp.sum(self.encode(encoder_params, obs) * z, axis=-1) / self.cfg.latent_dim
 
         # ── update ────────────────────────────────────────────────────────────
 
@@ -685,6 +707,7 @@ if __name__ == '__main__':
                 def rollout_step(h, xs):
                     a_t, target_h_t, td_t, r_t, rho = xs
                     q1, q2         = self.q(params, h, a_t)                    # Q at the current (predicted) latent
+                    # q1, q2         = self.q(params, jax.lax.stop_gradient(h), a_t)                    # WARNING
                     h_next, r_pred = self.next(params, h, a_t)
                     # squared distance between the L2-normalised latents = 2 - 2 cos(h_next, target) in [0, 4]
                     # consistency = rho * jnp.mean((l2_normalize(h_next) - l2_normalize(target_h_t)) ** 2, axis=-1)   # (B,)
@@ -870,41 +893,74 @@ if __name__ == '__main__':
         return obs_traj, aux_traj, phys_traj
 
     def plot_task(steps, train_state, obs_traj, aux_traj, phys_traj, mode='mppi', tag=''):
-        """3 panels: task reward on the dataset, reward-head prediction vs truth, agent trajectories."""
-        fig, axs = plt.subplots(1, 3, figsize=(15, 4))
-        eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), 10_000)
-        real_rewards = np.asarray(reward_fn(eval_aux, reward_param))
+        """5 panels: true reward of the dataset transitions, its reconstruction by the reward head, its linear
+        reconstruction phi(s)^T z (as in SF), reward head prediction vs truth, and the agent trajectories."""
+        fig, axs = plt.subplots(1, 5, figsize=(25, 4))
+        encoder_params = train_state.params['encoder']
+
+        # dataset transitions (s_t, a_t, s_{t+1}): true reward R(aux_{t+1}) vs the reward head's R(h(s_t), a_t)
+        eval_obs, eval_act, eval_next_obs, eval_aux, true_rewards = replay_buffer.sample_labeled(next_eval_key(), 10_000)
+        pred_rewards = np.asarray(agent.predict_reward(train_state.params, eval_obs, eval_act))[:, 0]
+        true_rewards = np.asarray(true_rewards)
+
+        # linear reconstruction, as in SF: z = sqrt(d) * normalize(mean_s phi(s) R(s)) is fitted on an independent batch of
+        # dataset states, then phi(s_{t+1})^T z / d is evaluated on the transitions above (out of sample)
+        fit_obs, _, _, fit_aux = replay_buffer.sample(next_eval_key(), 10_000)
+        z = agent.infer_z(encoder_params, fit_obs, reward_fn(fit_aux, reward_param))
+        lin_rewards = np.asarray(agent.linear_reward(encoder_params, eval_next_obs, z))
+        lin_corr = np.corrcoef(true_rewards, lin_rewards)[0, 1] if true_rewards.std() > 0 and lin_rewards.std() > 0 else float('nan')
+
         eval_obs, eval_aux = np.asarray(eval_obs), np.asarray(eval_aux)
         time_axis = np.tile(np.arange(EVAL_STEPS), (obs_traj.shape[0], 1))
 
+        # coordinates of the reward maps: the same as the trajectory panel of each env
         if ENV_NAME == 'cheetah':
-            axs[0].scatter(eval_obs[..., 8], eval_aux[..., 0], c=real_rewards)
-            axs[2].scatter(phys_traj[..., 0], time_axis, c='red', s=1)
-            axs[2].set_xlim([-25, 25])
+            xs, ys = eval_obs[:, 8], eval_aux[:, 0]
         elif ENV_NAME == 'walker':
-            axs[0].scatter(eval_obs[..., 16], eval_aux[..., 0], c=real_rewards)
-            axs[2].scatter(phys_traj[..., 1], time_axis, c='red', s=1)
+            xs, ys = eval_obs[:, 16], eval_aux[:, 0]
         elif ENV_NAME == 'quadruped':
-            axs[0].scatter(eval_aux[..., 0], eval_aux[..., 3], c=real_rewards)
+            xs, ys = eval_aux[:, 0], eval_aux[:, 3]
+        else:  # antmaze
+            xs, ys = eval_obs[:, 0], eval_obs[:, 1]
+
+        # true reward and reward-head reconstruction share the colour scale (the range of the TRUE reward: predictions
+        # outside it saturate) and the drawing order (high rewards on top). The linear reconstruction is a cosine, so it
+        # has its own colour scale; its corr with the true reward is scale free.
+        vmin, vmax = float(true_rewards.min()), float(true_rewards.max())
+        order = np.argsort(true_rewards)
+        sc0 = axs[0].scatter(xs[order], ys[order], c=true_rewards[order], vmin=vmin, vmax=vmax)
+        sc1 = axs[1].scatter(xs[order], ys[order], c=pred_rewards[order], vmin=vmin, vmax=vmax)
+        sc2 = axs[2].scatter(xs[order], ys[order], c=lin_rewards[order])
+        for sc, ax in zip((sc0, sc1, sc2), axs[:3]):
+            fig.colorbar(sc, ax=ax)
+
+        # reward head prediction vs truth
+        axs[3].scatter(true_rewards, pred_rewards, s=2, alpha=0.3)
+        lim = [min(vmin, pred_rewards.min()), max(vmax, pred_rewards.max())]
+        axs[3].plot(lim, lim, c='black', linewidth=1)
+        axs[3].set_xlabel('true reward'); axs[3].set_ylabel('predicted reward')
+        corr = np.corrcoef(true_rewards, pred_rewards)[0, 1] if true_rewards.std() > 0 and pred_rewards.std() > 0 else float('nan')
+        mse  = float(np.mean((true_rewards - pred_rewards) ** 2))
+
+        # agent trajectories
+        if ENV_NAME == 'cheetah':
+            axs[4].scatter(phys_traj[..., 0], time_axis, c='red', s=1)
+            axs[4].set_xlim([-25, 25])
+        elif ENV_NAME == 'walker':
+            axs[4].scatter(phys_traj[..., 1], time_axis, c='red', s=1)
+        elif ENV_NAME == 'quadruped':
             for j in range(aux_traj.shape[0]):
-                axs[2].plot(aux_traj[j, :, 0], aux_traj[j, :, 3], c='red')
+                axs[4].plot(aux_traj[j, :, 0], aux_traj[j, :, 3], c='red')
         elif ENV_NAME == 'antmaze':
-            axs[0].scatter(eval_obs[..., 0], eval_obs[..., 1], c=real_rewards)
-            axs[2].scatter(obs_traj[..., 0], obs_traj[..., 1], c='red', s=5)
-            add_largest_maze_walls(axs[0])
-            add_largest_maze_walls(axs[2])
+            axs[4].scatter(obs_traj[..., 0], obs_traj[..., 1], c='red', s=5)
+            for k in (0, 1, 2, 4):
+                add_largest_maze_walls(axs[k])
 
-        s_obs, s_act, s_rew = replay_buffer.sample_sequences(next_eval_key(), 10_000, horizon=1)
-        pred = np.asarray(agent.predict_reward(train_state.params, s_obs[0], s_act[0]))[:, 0]
-        true = np.asarray(s_rew[0, :, 0])
-        axs[1].scatter(true, pred, s=2, alpha=0.3)
-        lim = [min(true.min(), pred.min()), max(true.max(), pred.max())]
-        axs[1].plot(lim, lim, c='black', linewidth=1)
-        axs[1].set_xlabel('true reward'); axs[1].set_ylabel('predicted reward')
-
-        axs[0].set_title(f'{TASK}')
-        axs[1].set_title('Reward head')
-        axs[2].set_title(f'Agent Trajectory ({MODE_NAMES[mode]})')
+        axs[0].set_title(f'{TASK}: true reward')
+        axs[1].set_title('Reward head reconstruction R(h(s), a)')
+        axs[2].set_title(f"Linear reconstruction phi(s')^T z (corr={lin_corr:.3f})")
+        axs[3].set_title(f'Reward head: corr={corr:.3f}, MSE={mse:.4f}')
+        axs[4].set_title(f'Agent Trajectory ({MODE_NAMES[mode]})')
         plt.tight_layout()
         plt.savefig(f"{LOGS_FOLDER}/task{tag}-steps:{steps}.png")
         plt.close()
