@@ -464,7 +464,8 @@ if __name__ == '__main__':
     eval_logger = CSVLogger(
         filepath=f"{LOGS_FOLDER}/eval_log.csv",
         fieldnames=["step"] + eval_columns('') + [f"{label}_corr" for _, label, _ in benchmarks]
-                   + (eval_columns('policy_') if EVAL_MODE == 'both' else []) + ["num_evals", "tag", "time"],
+                   + (eval_columns('policy_') if EVAL_MODE == 'both' else []) + ["num_evals", "tag", "time"]
+                   + [f"{m}_time" for m in EVAL_MODES],   # wall-clock seconds of each eval mode (all tasks, num_evals episodes; first eval includes jit)
     )
 
     # ── Replay buffer (sequences of length HORIZON) ───────────────────────────────
@@ -1282,12 +1283,14 @@ if __name__ == '__main__':
     def evaluate(train_state, num_updates, make_plot, num_evals, tag):
         """Every eval mode on every task; one eval_log row (tag 'eval' = periodic, 'final' = after the last update)."""
         start_time = time.time()
-        results = {}
+        results, mode_times = {}, {}
         for i, mode in enumerate(EVAL_MODES):
             plot_tag = ('' if i == 0 else f'-{mode}') + ('-final' if tag == 'final' else '')
+            t0 = time.time()
             results[mode] = run_benchmark(train_state, num_updates, make_plot, mode, tag=plot_tag, num_evals=num_evals)
+            mode_times[f'{mode}_time'] = time.time() - t0
 
-        eval_row = {'step': num_updates, 'num_evals': num_evals, 'tag': tag, 'time': time.time() - start_time}
+        eval_row = {'step': num_updates, 'num_evals': num_evals, 'tag': tag, 'time': time.time() - start_time, **mode_times}
         def fill(prefix, means, stds):
             eval_row[f'{prefix}mean_over_tasks'] = float(means.mean())
             for i, (_, label, _) in enumerate(benchmarks):

@@ -400,13 +400,16 @@ if __name__ == '__main__':
                 ax.add_patch(patches.Rectangle((x, y), h, w, linewidth=2, edgecolor='gray', facecolor='gray'))
 
     N_BENCH   = len(benchmarks)
-    NUM_EVALS = 5
+    NUM_EVALS = 5             # episodes per task at the periodic evals (tag 'eval')
+    NUM_EVALS_FINAL = int(kwargs['num_evals_final']) if 'num_evals_final' in kwargs else 10   # final eval after the last update (tag 'final')
     print(NUM_TRAJECTORIES, TRAJECTORY_LEN, NUM_TRAJECTORIES * TRAJECTORY_LEN)
 
     BATCH_SIZE      = 1024
     EVAL_EACH_STEPS = 10      # in outer iterations (1 outer iteration = SCAN_LENGTH updates) -> torch: every 20k iterations
     SCAN_LENGTH     = 1_000
     NUM_OUTER_STEPS = 1_000   # 1M updates in total (torch: 2M iterations, one update every 2)
+    if 'num_outer_steps' in kwargs:   # shorter runs, for smoke tests only (recorded in the protocol line of info.txt)
+        NUM_OUTER_STEPS = int(kwargs['num_outer_steps'])
     PLOT_EACH_EVALS = 5
     SAVE_EACH_STEPS = 100
     if 'eval_each_steps' in kwargs:
@@ -421,7 +424,7 @@ if __name__ == '__main__':
         fieldnames=["step", "mean_over_tasks"]
                    + [f"{label}_{s}" for _, label, _ in benchmarks for s in ("mean", "std")]
                    + [f"{label}_corr" for _, label, _ in benchmarks]
-                   + ["mean_corr_over_tasks", "time"],
+                   + ["mean_corr_over_tasks", "time", "num_evals", "tag"],
     )
 
     # ── Replay buffer ─────────────────────────────────────────────────────────────
@@ -919,8 +922,8 @@ if __name__ == '__main__':
         axs[b, 1].set_title('Reconstructed Reward Function')
         axs[b, 2].set_title('Agent Trajectory')
 
-    def run_benchmark(train_state, steps, make_plot):
-        """Zero-shot evaluation on all tasks. For each task and each of the NUM_EVALS evals, a fresh task vector is
+    def run_benchmark(train_state, steps, make_plot, num_evals=num_evals, tag=''):
+        """Zero-shot evaluation on all tasks. For each task and each of the num_evals evals, a fresh task vector is
         inferred from 10k dataset states. Returns per-task (mean return, std, corr(B^T z, R))."""
         backward_params = train_state.fb_params['backward']
 
@@ -935,7 +938,7 @@ if __name__ == '__main__':
             zs, cs = [], []
             for b in ids:
                 reward_fn, _, param = benchmarks[b]
-                for _ in range(NUM_EVALS):
+                for _ in range(num_evals):
                     eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), 10_000)
                     z, corr = agent.infer_z(backward_params, eval_obs, reward_fn(eval_aux, param))
                     zs.append(z); cs.append(corr)
@@ -945,9 +948,9 @@ if __name__ == '__main__':
 
             for j, b in enumerate(ids):
                 reward_fn, label, param = benchmarks[b]
-                sl = slice(j * NUM_EVALS, (j + 1) * NUM_EVALS)
+                sl = slice(j * num_evals, (j + 1) * num_evals)
 
-                # rewards of the produced trajectories: (NUM_EVALS, EVAL_STEPS) -> (NUM_EVALS,)
+                # rewards of the produced trajectories: (num_evals, EVAL_STEPS) -> (num_evals,)
                 trajectory_rewards = np.asarray(reward_fn(jnp.asarray(aux_traj[sl], dtype=jnp.float32), param)).sum(axis=-1)
                 if ENV_NAME == 'antmaze' and 'goal' in label:
                     # goal tasks: 1 if the goal was reached at least once, else 0
@@ -961,12 +964,12 @@ if __name__ == '__main__':
                 means[b], stds[b], corrs[b] = trajectory_rewards.mean(), trajectory_rewards.std(ddof=1), cs[sl].mean()
 
                 if make_plot:
-                    plot_benchmark(axs, b, zs[(j + 1) * NUM_EVALS - 1], obs_traj[sl], aux_traj[sl],
+                    plot_benchmark(axs, b, zs[(j + 1) * num_evals - 1], obs_traj[sl], aux_traj[sl],
                                    None if phys_traj is None else phys_traj[sl], backward_params)
 
         if make_plot:
             plt.tight_layout()
-            plt.savefig(f"{LOGS_FOLDER}/benchmark-steps:{steps}.png")
+            plt.savefig(f"{LOGS_FOLDER}/benchmark{tag}-steps:{steps}.png")
             plt.close()
 
         return means, stds, corrs
@@ -986,6 +989,20 @@ if __name__ == '__main__':
     rewards_logs = np.zeros((N_BENCH, 0))
     n_evals = 0
 
+    def evaluate(train_state, num_updates, make_plot, num_evals, tag):
+        """Every task; one eval_log row (tag 'eval' = periodic, 'final' = after the last update)."""
+        start_time = time.time()
+        means, stds, corrs = run_benchmark(train_state, num_updates, make_plot, num_evals, '-final' if tag == 'final' else '')
+        eval_row = {'step': num_updates, 'mean_over_tasks': float(means.mean()),
+                    'mean_corr_over_tasks': float(corrs.mean()), 'time': time.time() - start_time,
+                    'num_evals': num_evals, 'tag': tag}
+        for i, (_, label, _) in enumerate(benchmarks):
+            eval_row[f'{label}_mean'] = float(means[i])
+            eval_row[f'{label}_std']  = float(stds[i])
+            eval_row[f'{label}_corr'] = float(corrs[i])
+        eval_logger.log(eval_row)
+        return means, stds, corrs
+
     add_text_to_file(f'{LOGS_FOLDER}/info.txt', run_info(globals()))      # seed, job, git, command, protocol, data, versions, start time
 
     for steps in tqdm(range(NUM_OUTER_STEPS)):
@@ -1002,17 +1019,8 @@ if __name__ == '__main__':
 
         if (steps + 1) % EVAL_EACH_STEPS == 0:
             make_plot = (n_evals % PLOT_EACH_EVALS == 0)
-            start_time = time.time()
-            means, stds, corrs = run_benchmark(train_state, num_updates, make_plot)
+            means, stds, corrs = evaluate(train_state, num_updates, make_plot, NUM_EVALS, 'eval')
             n_evals += 1
-
-            eval_row = {'step': num_updates, 'mean_over_tasks': float(means.mean()),
-                        'mean_corr_over_tasks': float(corrs.mean()), 'time': time.time() - start_time}
-            for i, (_, label, _) in enumerate(benchmarks):
-                eval_row[f'{label}_mean'] = float(means[i])
-                eval_row[f'{label}_std']  = float(stds[i])
-                eval_row[f'{label}_corr'] = float(corrs[i])
-            eval_logger.log(eval_row)
 
             rewards_logs = np.concatenate((rewards_logs, means.reshape(-1, 1)), axis=-1)
             num_cols = 4
@@ -1030,5 +1038,9 @@ if __name__ == '__main__':
 
         if (steps + 1) % SAVE_EACH_STEPS == 0:
             save_agent(train_state, f"{MODEL_SAVE_FOLDER}/fb_agent_step:{num_updates}.pickle")
+
+    # ── Final evaluation: NUM_EVALS_FINAL episodes per task on the last checkpoint (the reported number of the run) ──
+    save_agent(train_state, f"{MODEL_SAVE_FOLDER}/fb_agent_final.pickle")
+    evaluate(train_state, NUM_OUTER_STEPS * SCAN_LENGTH, True, NUM_EVALS_FINAL, 'final')
 
     mark_finished(f'{LOGS_FOLDER}/info.txt', NUM_OUTER_STEPS * SCAN_LENGTH)
