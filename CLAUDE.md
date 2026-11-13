@@ -19,6 +19,7 @@ states) is solved by MPPI planning in latent space, with no training. Plan and c
   - `tdmpc_jax.py`: TD-MPC v1 trained on the true reward of one task (`task=`), the oracle / upper bound.
   - `tdmpc_sf.py`: successor features on a JEPA latent (failed variant, kept for the record).
   - `tdmpc_fb.py`: B = phi (encoder output used as B). `tdmpc_fb_2.py`: **sepB** (B on raw observations, phi for dynamics/F/pi, B-head on real + imagined latents). `tdmpc_fb_3.py`: **gphi** (B = g(phi(s)), flags `consistency_coef`, `bcons_coef`, `f_encoder_grad`, `b_encoder_grad`, `ortho_coef`, `b_ortho_coef`, `phi_identity`).
+  - **`fbwm.py`: the main script from 2026-11-13.** sepB and gphi merged, `variant=sepB|gphi` required (each keeps its own architecture and defaults; gphi-only flags are refused with sepB). After the last update it runs a final evaluation with `num_evals_final` (default 10) episodes per task, logged as an `eval_log.csv` row with `tag=final`; periodic rows have `tag=eval`. `num_outer_steps=` shortens a run (smoke tests only). `tdmpc_fb_2.py` / `tdmpc_fb_3.py` stay for the record.
   - `eval_mode=both|mppi|policy` on the TD-MPC-FB scripts; `both` logs MPPI in the unprefixed columns and the policy in `policy_*`.
 - `utils/`: `logs.py`, `wrappers.py`. `tools/`: HPC and tracker tooling (below). `scripts/`: sbatch files (`scripts/queue/` for the queue).
 - `logs/<timestamp>_<exp_name>-<env>/`: `training_log.csv`, `eval_log.csv`, `info.txt` (line 1: command-line kwargs, line 2: config), a copy of the script. `models/<run>/`: checkpoints.

@@ -38,11 +38,11 @@ Not run yet: antmaze (with any method), multi-seed anything, the grounded sepB v
 ## 3. Protocol (fix this before the main runs)
 
 - [todo] **Seeds:** 5 per configuration for the main tables (3 is the minimum for ablations).
-- [todo] **Eval:** more episodes per task (currently 5, one fresh z per episode). Use 10 at the end of training. Report the **final checkpoint**, never the best eval.
+- [done 2026-11-13, `fbwm.py`] **Eval:** more episodes per task (currently 5, one fresh z per episode). Use 10 at the end of training. Report the **final checkpoint**, never the best eval.
 - [todo] **Aggregates:** per-task mean ± 95% CI over seeds; across tasks, IQM and mean of normalized scores (normalize by the TD-MPC oracle or the TD3 upper bound per task) with stratified bootstrap CIs (`rliable`-style).
 - [todo] **Label budget:** z is inferred from N labeled states. Default 10k as now, and the label sweep in §5.
-- [todo] **Run metadata:** `info.txt` records seed, git commit (+dirty flag), Slurm job id, full command (copy the helpers from CLFB's `_utils/logs.py`).
-- [todo] **One script for the method family:** merge sepB / grounded-sepB / gphi into one file with flags, so ablations differ by flags only.
+- [done 2026-11-13, b97c0f3] **Run metadata:** `info.txt` records seed, git commit (+dirty flag), Slurm job id, full command (copy the helpers from CLFB's `_utils/logs.py`).
+- [done 2026-11-13, `fbwm.py`, sepB + gphi; grounded sepB not yet] **One script for the method family:** merge sepB / grounded-sepB / gphi into one file with flags, so ablations differ by flags only.
 - [todo] **Compute accounting:** log wall-clock per eval step (MPPI vs policy) and per-task adaptation time for the baselines. Needed for C4.
 
 ## 4. The method: variants to settle first
@@ -123,3 +123,4 @@ Use **our** reward-free world model (same encoder and dynamics) for all arms, so
 
 ## Changelog
 - 2026-11-13: first version (written with Claude from the JZ runs synced into `hpc/`).
+- 2026-11-13: protocol items done: random seeds + run metadata in info.txt; `fbwm.py` (sepB + gphi, final 10-episode eval). Not yet tested on Jean Zay.

@@ -1,5 +1,7 @@
 # Method variants
 
+From 2026-11-13 both variants live in `fbwm.py` (`variant=sepB|gphi`); the sections below name the original scripts.
+
 Written from the code on 2026-11-13. Notation: `d = 50`, `phi(s)` the encoder (latent `h`), `B(s)` the FB backward embedding,
 `F(h, a, z)` the forward map (two heads), `pi(h, z)` the actor, `z` on the sphere of radius `sqrt(d)`. Zero-shot inference:
 `z = sqrt(d) * normalize(mean_s R(s) B(s))` on 10k labeled dataset states.

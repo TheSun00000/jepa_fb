@@ -108,7 +108,7 @@ def index_run(folder):
     if 'task' in flags:
         rec['task'] = flags['task']
     rec['flags'] = flags
-    rec['variant'] = ' '.join('%s=%s' % kv for kv in sorted(flags.items()) if kv[0] not in ('task', 'seed')) or 'default'
+    rec['variant'] = ' '.join('%s=%s' % kv for kv in sorted(flags.items()) if kv[0] not in ('task', 'seed', 'variant')) or 'default'
     seed = flags.get('seed')
     if seed is None:
         m = re.search(r'seed=(\d+)', cfg)
@@ -121,6 +121,12 @@ def index_run(folder):
         rec.update(nEvals=0, lastStep=0, complete=False)
         return rec, None
     cols = ev[0].keys()
+    # fbwm.py (2026-11-13 on): periodic rows have tag 'eval'; one row tagged 'final' after the last update (NUM_EVALS_FINAL episodes)
+    final_rows = [r for r in ev if r.get('tag') == 'final']
+    ev = [r for r in ev if r.get('tag') != 'final']
+    if not ev:
+        rec.update(nEvals=0, lastStep=0, complete=False)
+        return rec, None
     steps = [int(float(r['step'])) for r in ev if num(r.get('step')) is not None]
     rec['nEvals'], rec['lastStep'] = len(ev), (steps[-1] if steps else 0)
     # newer runs write a `finished:` line when training reaches its last update; older ones are judged by the last eval step
@@ -153,6 +159,9 @@ def index_run(folder):
             return {'mppi': None, 'policy': vm}
         return {'mppi': vm, 'policy': vp}
 
+    if final_rows:                        # the reported number: the final eval with more episodes
+        last = final_rows[-1:]
+        rec['finalEval'] = {'num_evals': final_rows[-1].get('num_evals'), 'source': 'final'}
     rec['final'] = pick(m_col, p_col)
     allm = [num(r.get(m_col)) for r in ev]
     allp = [num(r.get(p_col)) for r in ev] if p_col else []
@@ -160,6 +169,8 @@ def index_run(folder):
     bp = max([x for x in allp if x is not None], default=None)
     rec['best'] = {'mppi': None, 'policy': bm} if rec['mode'] == 'policy' else {'mppi': bm, 'policy': bp}
     rec['tasks'] = {t: pick(t + '_mean', ('policy_%s_mean' % t) if p_col else None) for t in tasks}
+    if final_rows:
+        last = ev[-LAST_K:]                # `last` back to the periodic evals for anything computed below
     if tasks and any((t + '_corr') in cols for t in tasks):
         rec['corr'] = {t: mean(num(r.get(t + '_corr')) for r in last) for t in tasks}
 
