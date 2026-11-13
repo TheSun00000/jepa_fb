@@ -202,7 +202,7 @@ svg text { fill: var(--dim); font-family: var(--font); font-size: 10px; }
   <section id="runs" class="sec" data-view="runs" hidden>
     <header class="pane" style="gap: var(--s2)">
       <h2><span class="hash">#</span>Runs</h2>
-      <p class="lede">One row per run folder. Scores are the mean over the environment's tasks, averaged over the last 10 evaluations (a single evaluation swings by about ±150). Click a row for per-task numbers and the learning curve.</p>
+      <p class="lede">One row per run folder. Scores are the mean over the environment's tasks: the final 10-episode evaluation when the run has one (fbwm.py), otherwise the average of the last 10 periodic evaluations (a single evaluation swings by about ±150). Click a row for per-task numbers and the learning curve.</p>
       <div class="filters">
         <label for="f-env">env <select id="f-env"><option value="">all</option><option>cheetah</option><option>walker</option><option>quadruped</option><option>antmaze</option></select></label>
         <label for="f-fam">family <select id="f-fam"><option value="">all</option></select></label>
