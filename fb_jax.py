@@ -922,7 +922,7 @@ if __name__ == '__main__':
         axs[b, 1].set_title('Reconstructed Reward Function')
         axs[b, 2].set_title('Agent Trajectory')
 
-    def run_benchmark(train_state, steps, make_plot, num_evals=num_evals, tag=''):
+    def run_benchmark(train_state, steps, make_plot, num_evals=NUM_EVALS, tag=''):
         """Zero-shot evaluation on all tasks. For each task and each of the num_evals evals, a fresh task vector is
         inferred from 10k dataset states. Returns per-task (mean return, std, corr(B^T z, R))."""
         backward_params = train_state.fb_params['backward']
