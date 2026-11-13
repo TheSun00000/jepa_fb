@@ -25,3 +25,8 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - Reason:
 - Alternatives considered:
 - Evidence (run folder, notebook, discussion):
+
+## 2026-11-13: core runs use 3 seeds and evaluate every 20k updates
+- **3 seeds (1, 2, 3) for now, not 5** (user): this is a first test of the gate. Seeds 4 and 5 can come later. Seeds are passed explicitly so the configs line up seed by seed.
+- **`eval_each_steps=20` (every 20k updates instead of 10k):** with evals every 10k, gphi takes about 111–119 min on H100, too close to the 2h dev limit, and the user wants walltimes under 2h for faster allocation. Measured from old runs, halving the evals gives about 80 min for sepB and 95–100 min for gphi. The reported number is the final 10-episode eval, which this doesn't change; only the curves get coarser. Walltimes asked: FB 0:50, sepB 1:40, gphi 1:50.
+- **`fb_jax.py` gets the same final eval as `fbwm.py`** (`tag=final`, 10 episodes), so FB is measured the same way as the other configs.

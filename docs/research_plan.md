@@ -43,12 +43,13 @@ Not run yet: antmaze (with any method), multi-seed anything, the grounded sepB v
 - [todo] **Label budget:** z is inferred from N labeled states. Default 10k as now, and the label sweep in §5.
 - [done 2026-11-13, b97c0f3] **Run metadata:** `info.txt` records seed, git commit (+dirty flag), Slurm job id, full command (copy the helpers from CLFB's `_utils/logs.py`).
 - [done 2026-11-13, `fbwm.py`, sepB + gphi; grounded sepB not yet] **One script for the method family:** merge sepB / grounded-sepB / gphi into one file with flags, so ablations differ by flags only.
-- [todo] **Compute accounting:** log wall-clock per eval step (MPPI vs policy) and per-task adaptation time for the baselines. Needed for C4.
+- [partly done 2026-11-13: `mppi_time` / `policy_time` per eval row in `fbwm.py`] **Compute accounting:** log wall-clock per eval step (MPPI vs policy) and per-task adaptation time for the baselines. Needed for C4.
 
 ## 4. The method: variants to settle first
 
-### 4.1 Core runs (C1)  `[todo]`
+### 4.1 Core runs (C1)  `[running 2026-11-13, 3 seeds first]`
 FB (policy), sepB (MPPI and policy), gphi best (consistency 5, bcons 2) × cheetah, walker, quadruped × 5 seeds.
+Queued 2026-11-13 with seeds 1–3 (`scripts/queue/fbj_core_*.sh`, eval every 20k updates, final 10-episode eval); seeds 4–5 later.
 **Gate:** MPPI significantly > FB on at least 2 of 3 envs. If not, stop and diagnose before anything else.
 
 ### 4.2 Grounded sepB (C3), needs user approval (method change)  `[todo]`
@@ -124,3 +125,4 @@ Use **our** reward-free world model (same encoder and dynamics) for all arms, so
 ## Changelog
 - 2026-11-13: first version (written with Claude from the JZ runs synced into `hpc/`).
 - 2026-11-13: protocol items done: random seeds + run metadata in info.txt; `fbwm.py` (sepB + gphi, final 10-episode eval). Not yet tested on Jean Zay.
+- 2026-11-13: smoke test of `fbwm.py` passed on JZ (job 153137). `fb_jax.py` gets the final 10-episode eval; `fbwm.py` logs eval time per mode. §4.1 core runs queued with 3 seeds (27 jobs).
