@@ -19,6 +19,7 @@ and pushed, because the cluster pulls it), written by `add` from a header and a 
     tools/queue.py prio NAME [NAME..]  # move queued entries to the front
 
 `submit` refuses to run if the local scripts are not committed and pushed (the cluster would not have them).
+Every entry name gets the prefix `fbj_` (CLFB's tools recognise jobs by script name, on the same account).
 """
 import argparse, fcntl, json, os, re, subprocess, sys
 from datetime import datetime
@@ -129,7 +130,12 @@ def group_of(e):
     return 'h100'
 
 
+PREFIX = 'fbj_'   # CLFB's status collector matches jobs by script name only (same account): a unique prefix keeps fb_jepa jobs out of CLFB's tracker
+
+
 def add(a):
+    if not a.name.startswith(PREFIX):
+        a.name = PREFIX + a.name
     q = load()
     if any(e['name'] == a.name for e in q['entries']):
         sys.exit('entry %s already exists' % a.name)
