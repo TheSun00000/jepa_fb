@@ -99,7 +99,7 @@ if __name__ == '__main__':
     date_time_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
     exp_name = (f'JEPAWM-{ENV_NAME}' if MODE == 'pretrain' else
-                f'TDMPC-adapt{"L" if kwargs.get("q_data") == "labeled" else ""}-{ENV_NAME}-{TASK}')   # adaptL: Q from the N labels only
+                f'TDMPC-adapt{ {"labeled": "L", "labeled_model": "LM"}.get(kwargs.get("q_data"), "")}-{ENV_NAME}-{TASK}')   # adaptL / adaptLM: no dataset access
 
     while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
         LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
@@ -449,7 +449,7 @@ if __name__ == '__main__':
         NUM_OUTER_STEPS = ADAPT_STEPS // SCAN_LENGTH            # recorded as `updates` in the protocol line of info.txt
         EVAL_EACH_STEPS = int(kwargs['eval_each_steps']) if 'eval_each_steps' in kwargs else 10   # in chunks of 1000 Q updates
         Q_DATA = str(kwargs['q_data']) if 'q_data' in kwargs else 'dataset'   # dataset: TD on all transitions, rewards from the head
-        assert Q_DATA in ['dataset', 'labeled'], "q_data=dataset|labeled"   # labeled: one-step TD on the N labelled transitions only
+        assert Q_DATA in ['dataset', 'labeled', 'labeled_model'], "q_data=dataset|labeled|labeled_model"   # labeled: one-step TD on the N labelled transitions only
         EVAL_MODE  = str(kwargs['eval_mode']) if 'eval_mode' in kwargs else 'both'
         assert EVAL_MODE in ['mppi', 'policy', 'both']
         EVAL_MODES = ['mppi', 'policy'] if EVAL_MODE == 'both' else [EVAL_MODE]
@@ -821,6 +821,61 @@ if __name__ == '__main__':
             return ts, {'phase': jnp.ones(()), 'reward_loss': jnp.zeros(()), 'value_loss': aux['value_loss'],
                         'pi_loss': pi_loss, 'q_mean': aux['q_mean'], 'grad_norm': gnorm}
 
+        # ── adapt (2''), q_data=labeled_model: Dyna-style, imagined rollouts from the N labelled states (no dataset access) ──
+        @partial(jax.jit, static_argnames=("self",))
+        def update_value_model(self, ts: AdaptState, lab_obs, lab_act, lab_rew, lab_next_obs):
+            """Q on (a) the real labelled transitions with the true r (one-step TD) and (b) H-step rollouts of the frozen dynamics
+            from the labelled states with the noisy policy, rewards from the reward head (TD at every imagined step)."""
+            c, H = self.cfg, self.cfg.horizon
+            key, k_batch, k_td, k_pi, k_roll = jax.random.split(ts.random_key, 5)
+            i = jax.random.randint(k_batch, (c.batch_size,), 0, lab_obs.shape[0])
+            enc = ts.params['encoder']
+            h, h_next = self.encode(enc, lab_obs[i]), self.encode(enc, lab_next_obs[i])
+            a, r = lab_act[i], lab_rew[i]
+            # imagined rollout (constants): h_0 = phi(s), a_t ~ pi(h_t) + noise, h_{t+1} = dynamics, r_t = reward head
+            hs, acts, rews = [h], [], []
+            for t in range(H):
+                k_roll, sub = jax.random.split(k_roll)
+                a_t = self.pi(ts.pi_params, hs[-1], sub, c.min_std)
+                h_n, r_t = self.next(ts.params, hs[-1], a_t)
+                hs.append(h_n); acts.append(a_t); rews.append(r_t)
+            hs, acts, rews = jnp.stack(hs), jnp.stack(acts), jnp.stack(rews)              # (H+1,B,L) (H,B,A) (H,B,1)
+            k_td1, k_td2 = jax.random.split(k_td)
+            na_real = self.pi(ts.pi_params, h_next, k_td1, c.min_std)
+            tq1, tq2 = self.q(ts.target_params, h_next, na_real)
+            td_real = jax.lax.stop_gradient(r + c.discount * jnp.minimum(tq1, tq2))
+            na_im = self.pi(ts.pi_params, hs[1:], k_td2, c.min_std)
+            tq1, tq2 = self.q(ts.target_params, hs[1:], na_im)
+            td_im = jax.lax.stop_gradient(rews + c.discount * jnp.minimum(tq1, tq2))     # (H,B,1)
+            hs, acts = jax.lax.stop_gradient(hs), jax.lax.stop_gradient(acts)
+
+            def loss_fn(params):
+                q1, q2 = self.q(params, h, a)
+                val_real = jnp.mean((q1 - td_real) ** 2 + (q2 - td_real) ** 2)
+                qi1, qi2 = self.q(params, hs[:-1], acts)
+                val_im = jnp.mean((qi1 - td_im) ** 2 + (qi2 - td_im) ** 2)
+                val = val_real + val_im
+                return c.value_coef * val, {'value_loss': val, 'q_mean': q1.mean()}
+
+            (_, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(ts.params)
+            params, opt_state, gnorm = self._masked_step(self.optimizer, grads, ts.optimizer_state, ts.params, ('q1', 'q2'))
+
+            def pi_loss_fn(pi_params):
+                q1, q2 = self.q(params, hs, self.pi(pi_params, hs, k_pi, c.min_std))
+                return -jnp.minimum(q1, q2).mean()
+
+            pi_loss, pi_grads = jax.value_and_grad(pi_loss_fn)(ts.pi_params)
+            pi_updates, pi_opt_state = self.pi_optimizer.update(pi_grads, ts.pi_optimizer_state, ts.pi_params)
+            pi_params = optax.apply_updates(ts.pi_params, pi_updates)
+            tau = c.tau * (ts.steps % c.update_freq == 0)
+            target_params = dict(ts.target_params)
+            for k in ('q1', 'q2'):
+                target_params[k] = jax.tree_util.tree_map(lambda p, t: t + tau * (p - t), params[k], ts.target_params[k])
+            ts = ts.replace(params=params, target_params=target_params, pi_params=pi_params, optimizer_state=opt_state,
+                            pi_optimizer_state=pi_opt_state, random_key=key, steps=ts.steps + 1)
+            return ts, {'phase': jnp.ones(()), 'reward_loss': jnp.zeros(()), 'value_loss': aux['value_loss'],
+                        'pi_loss': pi_loss, 'q_mean': aux['q_mean'], 'grad_norm': gnorm}
+
         # ── MPPI planning (as tdmpc_jax.py) ───────────────────────────────────
 
         def _estimate_value(self, params, pi_params, h, actions, key):
@@ -960,6 +1015,9 @@ if __name__ == '__main__':
     def value_chunk(ts, rb):
         if Q_DATA == 'labeled':
             return jax.lax.scan(lambda t, _: agent.update_value_labeled(t, lab_obs, lab_act, lab_rew, lab_next_obs),
+                                ts, None, length=SCAN_LENGTH)
+        if Q_DATA == 'labeled_model':
+            return jax.lax.scan(lambda t, _: agent.update_value_model(t, lab_obs, lab_act, lab_rew, lab_next_obs),
                                 ts, None, length=SCAN_LENGTH)
         return jax.lax.scan(lambda t, _: agent.update_value(t, rb), ts, None, length=SCAN_LENGTH)
 

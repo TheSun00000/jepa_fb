@@ -115,7 +115,7 @@ if __name__ == '__main__':
                      "model_enc_grad_norm", "f_enc_grad_norm", "b_enc_grad_norm",
                      "fb_loss", "fb_diag", "fb_offdiag", "q_loss", "b_ortho_loss", "f_grad_norm", "b_grad_norm", "M1", "F_norm",
                      "pi_loss", "q_mean", "bhead_loss",
-                     "latent_std", "feat_cov_l2", "feat_mean_norm", "b_std", "b_cov_l2", "b_mean_norm"]
+                     "latent_std", "feat_cov_l2", "feat_mean_norm", "b_std", "b_cov_l2", "b_mean_norm", "fcons_loss"]
     train_logger = CSVLogger(
         filepath=f"{LOGS_FOLDER}/training_log.csv",
         fieldnames=["step"] + TRAIN_METRICS + ["time"],
@@ -453,6 +453,10 @@ if __name__ == '__main__':
     SAVE_EACH_STEPS = 100
     if 'eval_each_steps' in kwargs:
         EVAL_EACH_STEPS = int(kwargs['eval_each_steps'])
+    # MPPI only on every MPPI_EVAL_EACH-th outer step (the other periodic evals are policy-only, MPPI columns empty).
+    # Default: every periodic eval (unchanged). 2026-11-15 protocol: eval_each_steps=25 mppi_eval_each=100.
+    MPPI_EVAL_EACH = int(kwargs['mppi_eval_each']) if 'mppi_eval_each' in kwargs else EVAL_EACH_STEPS
+    DIAG_F = str(kwargs.get('diag_f', '0')).lower() in ('1', 'true')   # eval_ckpt diagnostic: F / B on imagined vs real latents
     # Number of benchmark tasks rolled out in parallel during eval (each one needs NUM_EVALS env instances)
     EVAL_CHUNK = int(kwargs['eval_chunk']) if 'eval_chunk' in kwargs else N_BENCH
 
@@ -472,7 +476,7 @@ if __name__ == '__main__':
         filepath=f"{LOGS_FOLDER}/eval_log.csv",
         fieldnames=["step"] + eval_columns('') + [f"{label}_corr" for _, label, _ in benchmarks]
                    + (eval_columns('policy_') if EVAL_MODE == 'both' else []) + ["num_evals", "tag", "time"]
-                   + [f"{m}_time" for m in EVAL_MODES] + ["z_labels"],   # wall-clock seconds of each eval mode (all tasks, num_evals episodes; first eval includes jit)
+                   + [f"{m}_time" for m in EVAL_MODES] + ["z_labels", "mppi_elite_spread"],   # wall-clock seconds of each eval mode (all tasks, num_evals episodes; first eval includes jit)
     )
 
     # ── Replay buffer (sequences of length HORIZON) ───────────────────────────────
@@ -720,6 +724,8 @@ if __name__ == '__main__':
         discount:            float = 0.95
         consistency_coef:    float = 2.0     # latent consistency: imagined h_t vs EMA phi(s_t)
         bcons_coef:          float = 0.0     # gphi only. B-space consistency: g(imagined h_t) vs EMA B(s_t); 0 = off (set 1.0 to enable)
+        fcons_coef:          float = 0.0     # M1 (2026-11-15): F-consistency, F(imagined h_t, a_t, z) vs EMA F(EMA phi(s_t), a_t, z); 0 = off
+        fcons_model_grad:    bool  = False   # M2: the F-consistency gradient also flows into phi and the dynamics (M1: into F only)
         ortho_coef:          float = 0.0     # orthonormality loss on phi(s): off (B's own orthonormality loss is kept, b_ortho_coef)
         b_ortho_coef:        float = 1.0     # orthonormality loss on B(s'), inside the FB loss (FB's value)
         f_encoder_grad:      float = 0.1     # scale of the FB gradient that reaches phi through F's input
@@ -738,6 +744,8 @@ if __name__ == '__main__':
         mixture_coef:        float = 0.05    # policy trajectories = int(mixture_coef * num_samples), added on top
         temperature:         float = 0.5
         momentum:            float = 0.1
+        mppi_terminal_only:  bool  = False   # eval diagnostic: plan with the terminal F only (no per-step B reward)
+        mppi_norm:           bool  = False   # MPPI softmax on elite values standardised by their std (scale-free temperature)
 
     class TDMPCFBTrainingState(flax.struct.PyTreeNode):
         params:                Any          # trunk + dynamics: {'encoder' (phi), 'dynamics'}
@@ -927,9 +935,13 @@ if __name__ == '__main__':
             target_M = jnp.minimum(tF1 @ target_B.T, tF2 @ target_B.T)                             # (B,B)
             next_Q   = jnp.minimum((tF1 * z).sum(-1), (tF2 * z).sum(-1))
             rho_t    = c.rho ** jnp.arange(H, dtype=jnp.float32)
+            # F-consistency targets (M1/M2): EMA F at the EMA latent of s_k, k = 1..H-1, with the dataset action a_k and the same z
+            if c.fcons_coef > 0:
+                z_rep = jnp.broadcast_to(z, (H - 1,) + z.shape)
+                fc_t1, fc_t2 = self.F(ts.target_params['f'], target_h[:H - 1], action[1:], z_rep)           # (H-1,B,D)
 
             # ── phi + dynamics (+ g for gphi): latent consistency, B-space consistency (gphi), orthonormality on phi ──
-            def model_loss_fn(params, b_params):
+            def model_loss_fn(params, b_params, f_params):
                 h0 = self.encode(params['encoder'], obs[0])
 
                 def rollout_step(h, xs):
@@ -948,9 +960,19 @@ if __name__ == '__main__':
                 consistency_loss = cons.sum(0).mean()
                 bcons_loss       = bcons.sum(0).mean()
                 ortho_loss       = jnp.zeros(()) if c.phi_identity else gram_ortho(h0)
-                model_loss = (c.consistency_coef * consistency_loss + c.bcons_coef * bcons_loss) / H + c.ortho_coef * ortho_loss
+                if c.fcons_coef > 0:
+                    # hs_next[k] is the imagined latent of s_{k+1}; M1: constant (gradient into F only), M2: into phi and the dynamics
+                    h_im = hs_next[:H - 1] if c.fcons_model_grad else jax.lax.stop_gradient(hs_next[:H - 1])
+                    f1, f2 = self.F(f_params, h_im, action[1:], z_rep)
+                    fc = jnp.mean((f1 - fc_t1) ** 2, axis=-1) + jnp.mean((f2 - fc_t2) ** 2, axis=-1)       # (H-1,B)
+                    fcons_loss = (rho_t[:H - 1, None] * fc).sum(0).mean()
+                else:
+                    fcons_loss = jnp.zeros(())
+                model_loss = ((c.consistency_coef * consistency_loss + c.bcons_coef * bcons_loss + c.fcons_coef * fcons_loss) / H
+                              + c.ortho_coef * ortho_loss)
                 std, cov_l2, mean_norm = feature_stats(h0)
                 aux = {'hs_next': hs_next, 'consistency_loss': consistency_loss, 'bcons_loss': bcons_loss, 'ortho_loss': ortho_loss,
+                       'fcons_loss': fcons_loss,
                        'latent_std': std, 'feat_cov_l2': cov_l2, 'feat_mean_norm': mean_norm}
                 return model_loss, aux
 
@@ -969,8 +991,8 @@ if __name__ == '__main__':
                            b_std=b_std, b_cov_l2=b_cov_l2, b_mean_norm=b_mean_norm)
                 return fb_loss + c.b_ortho_coef * b_ortho, aux
 
-            (model_loss, m_aux), (grad_model, grad_b_model) = jax.value_and_grad(
-                model_loss_fn, argnums=(0, 1), has_aux=True)(ts.params, ts.b_params)
+            (model_loss, m_aux), (grad_model, grad_b_model, grad_f_model) = jax.value_and_grad(
+                model_loss_fn, argnums=(0, 1, 2), has_aux=True)(ts.params, ts.b_params, ts.f_params)
             (_, fb_aux), (grad_enc_f, grad_enc_b, grad_b_fb, grad_f) = jax.value_and_grad(
                 fb_loss_fn, argnums=(0, 1, 2, 3), has_aux=True)(
                 ts.params['encoder'], ts.params['encoder'], ts.b_params, ts.f_params)
@@ -982,6 +1004,7 @@ if __name__ == '__main__':
                 'dynamics': grad_model['dynamics'],
             }
             grad_b = jax.tree_util.tree_map(jnp.add, grad_b_model, grad_b_fb)                     # grad_b_model = 0 for sepB
+            grad_f = jax.tree_util.tree_map(jnp.add, grad_f, grad_f_model)                         # grad_f_model = 0 unless fcons_coef > 0
             model_enc_grad_norm = optax.global_norm(grad_model['encoder'])     # consistency (+ B-consistency) + orthonormality
             f_enc_grad_norm     = optax.global_norm(grad_enc_f)                # from F's input (after scaling)
             b_enc_grad_norm     = optax.global_norm(grad_enc_b)                # from B = g(phi) (after scaling; 0 for sepB)
@@ -1040,6 +1063,7 @@ if __name__ == '__main__':
                 'pi_loss': pi_loss, 'q_mean': q_mean, 'bhead_loss': bhead_loss,
                 'latent_std': m_aux['latent_std'], 'feat_cov_l2': m_aux['feat_cov_l2'], 'feat_mean_norm': m_aux['feat_mean_norm'],
                 'b_std': fb_aux['b_std'], 'b_cov_l2': fb_aux['b_cov_l2'], 'b_mean_norm': fb_aux['b_mean_norm'],
+                'fcons_loss': m_aux['fcons_loss'],
             }
             return ts, metrics
 
@@ -1052,7 +1076,8 @@ if __name__ == '__main__':
             G, discount = 0.0, 1.0
             for t in range(c.horizon):
                 h = self.next(params, h, actions[t])
-                G = G + discount * self.score(self.reward_feature(b_params, bh_params, h), z)     # sepB B_hat(h), gphi g(h)
+                if not c.mppi_terminal_only:
+                    G = G + discount * self.score(self.reward_feature(b_params, bh_params, h), z)     # sepB B_hat(h), gphi g(h)
                 discount = discount * c.discount
             a = self.pi(pi_params, h, z, key, c.min_std)
             F1, F2 = self.F(f_params, h, a, z)
@@ -1092,7 +1117,8 @@ if __name__ == '__main__':
                 elite_value, elite_idx = jax.lax.top_k(value, c.num_elites)
                 elite_actions = actions[:, elite_idx]                               # (H, E, A)
 
-                logits = c.temperature * (elite_value - elite_value.max())
+                spread = elite_value.std()
+                logits = c.temperature * (elite_value - elite_value.max()) / ((spread + 1e-6) if c.mppi_norm else 1.0)
                 score  = jax.nn.softmax(logits)
                 _mean  = (score[None, :, None] * elite_actions).sum(axis=1)
                 _std   = jnp.sqrt((score[None, :, None] * (elite_actions - _mean[:, None]) ** 2).sum(axis=1))
@@ -1101,7 +1127,7 @@ if __name__ == '__main__':
 
             key, sub = jax.random.split(key)
             chosen = jax.random.categorical(sub, logits)
-            return elite_actions[0, chosen], mean                                   # eval mode: no exploration noise
+            return elite_actions[0, chosen], mean, spread                           # eval mode: no exploration noise
 
         @partial(jax.jit, static_argnames=("self",))
         def plan_batch(self, ts, obs, zs, prev_mean, use_prev, key):
@@ -1120,6 +1146,11 @@ if __name__ == '__main__':
                  'b_encoder_grad', 'q_loss_coef', 'mix_ratio', 'stddev'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
+    if 'fcons_coef' in kwargs:
+        tdmpc_config = dataclasses.replace(tdmpc_config, fcons_coef=float(kwargs['fcons_coef']))
+    for name in ('fcons_model_grad', 'mppi_terminal_only', 'mppi_norm'):
+        if name in kwargs:
+            tdmpc_config = dataclasses.replace(tdmpc_config, **{name: str(kwargs[name]).lower() in ('1', 'true')})
     for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: int(kwargs[name])})
@@ -1153,6 +1184,7 @@ if __name__ == '__main__':
     # ── Zero-shot evaluation on every benchmark task ──────────────────────────────
 
     eval_envs = []   # pool of env instances, grown on demand and reused across evals
+    mppi_spread_log = []   # std of the final-iteration elite values at every MPPI step (reset at every eval row)
 
     def rollout_batch(ts, zs, random_key, mode='mppi'):
         """len(zs) envs rolled out in lock-step, env i conditioned on task vector zs[i]. One batched jitted call per step.
@@ -1165,6 +1197,7 @@ if __name__ == '__main__':
         states    = [env_reset(e) for e in envs]
         prev_mean = jnp.zeros((n, tdmpc_config.horizon, ACTION_DIM))
         obs_l, aux_l, phys_l = [], [], []
+        elite_spreads = mppi_spread_log
         for step in tqdm(range(EVAL_STEPS), leave=False):
             obs = np.stack(states).astype(np.float32)
             obs_l.append(obs)
@@ -1176,7 +1209,8 @@ if __name__ == '__main__':
                 actions = agent.act_policy_batch(ts, jnp.asarray(obs), zs)
             else:
                 random_key, sub = jax.random.split(random_key)
-                actions, prev_mean = agent.plan_batch(ts, jnp.asarray(obs), zs, prev_mean, jnp.asarray(step > 0), sub)
+                actions, prev_mean, spread = agent.plan_batch(ts, jnp.asarray(obs), zs, prev_mean, jnp.asarray(step > 0), sub)
+                elite_spreads.append(float(jnp.mean(spread)))
             states = [env_step(e, a) for e, a in zip(envs, np.asarray(actions))]
 
         obs_traj  = np.stack(obs_l).transpose(1, 0, 2)
@@ -1287,28 +1321,31 @@ if __name__ == '__main__':
     rewards_logs = {mode: np.zeros((N_BENCH, 0)) for mode in EVAL_MODES}
     n_evals = 0
 
-    def evaluate(train_state, num_updates, make_plot, num_evals, tag):
+    def evaluate(train_state, num_updates, make_plot, num_evals, tag, modes=None):
         """Every eval mode on every task; one eval_log row (tag 'eval' = periodic, 'final' = after the last update)."""
         start_time = time.time()
         results, mode_times = {}, {}
-        for i, mode in enumerate(EVAL_MODES):
+        mppi_spread_log.clear()
+        for i, mode in enumerate(modes or EVAL_MODES):
             plot_tag = ('' if i == 0 else f'-{mode}') + ('-final' if tag == 'final' else '')
             t0 = time.time()
             results[mode] = run_benchmark(train_state, num_updates, make_plot, mode, tag=plot_tag, num_evals=num_evals)
             mode_times[f'{mode}_time'] = time.time() - t0
 
         eval_row = {'step': num_updates, 'num_evals': num_evals, 'tag': tag, 'time': time.time() - start_time, **mode_times,
-                    'z_labels': Z_LABELS}
+                    'z_labels': Z_LABELS, 'mppi_elite_spread': float(np.mean(mppi_spread_log)) if mppi_spread_log else ''}
         def fill(prefix, means, stds):
             eval_row[f'{prefix}mean_over_tasks'] = float(means.mean())
             for i, (_, label, _) in enumerate(benchmarks):
                 eval_row[f'{prefix}{label}_mean'] = float(means[i])
                 eval_row[f'{prefix}{label}_std']  = float(stds[i])
         first = EVAL_MODES[0]
-        fill('', results[first][0], results[first][1])
+        if first in results:                       # MPPI columns stay empty on a policy-only eval
+            fill('', results[first][0], results[first][1])
+        any_mode = first if first in results else next(iter(results))
         for i, (_, label, _) in enumerate(benchmarks):
-            eval_row[f'{label}_corr'] = float(results[first][2][i])
-        if EVAL_MODE == 'both':
+            eval_row[f'{label}_corr'] = float(results[any_mode][2][i])
+        if EVAL_MODE == 'both' and 'policy' in results:
             fill('policy_', results['policy'][0], results['policy'][1])
         eval_logger.log(eval_row)
         return results
@@ -1322,6 +1359,38 @@ if __name__ == '__main__':
         restored = serialization.from_state_dict({k: getattr(train_state, k) for k in keys}, loaded)
         train_state = train_state.replace(**restored)
         print('loaded', EVAL_CKPT, '| z from', Z_LABELS, 'labelled states')
+        if DIAG_F:
+            # F and B on the imagined latents h_hat_t (rolled out from phi(s_0) with the dataset actions) vs on phi(s_t), t = 1..H,
+            # for each task's inferred z: corr and relative RMSE of F^T z (with pi's action on each side), cos(g(h_hat_t), B(s_t)).
+            diag_logger = CSVLogger(f"{LOGS_FOLDER}/diag_f.csv",
+                                    ["task", "t", "f_corr", "f_rel_rmse", "f_bias", "b_cos", "r_corr", "f_real_mean", "f_imag_mean"])
+            ts_ = train_state
+            obs_d, act_d = replay_buffer.sample_sequences(next_eval_key(), 10_000, tdmpc_config.horizon)
+            enc = ts_.params['encoder']
+            h_real = agent.encode(enc, obs_d)                                                 # (H+1,N,L)
+            h_im = [h_real[0]]
+            for t in range(tdmpc_config.horizon):
+                h_im.append(agent.next(ts_.params, h_im[-1], act_d[t]))
+            for b_i, (reward_fn, label, param) in enumerate(benchmarks):
+                lab_obs, _, _, lab_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
+                z_t, _ = agent.infer_z(enc, ts_.b_params, lab_obs, reward_fn(lab_aux, param))
+                zN = jnp.broadcast_to(z_t, (h_real.shape[1], z_t.shape[0]))
+                for t in range(1, tdmpc_config.horizon + 1):
+                    def fq(h):
+                        a = agent.pi(ts_.pi_params, h, zN, None, 0.0)
+                        F1, F2 = agent.F(ts_.f_params, h, a, zN)
+                        return np.asarray(jnp.minimum(agent.score(F1, zN), agent.score(F2, zN))[:, 0])
+                    qr, qi = fq(h_real[t]), fq(h_im[t])
+                    br = np.asarray(agent.reward_feature(ts_.b_params, ts_.bh_params, h_real[t]))
+                    bi = np.asarray(agent.reward_feature(ts_.b_params, ts_.bh_params, h_im[t]))
+                    rr, ri = br @ np.asarray(z_t), bi @ np.asarray(z_t)
+                    cos = np.sum(br * bi, -1) / (np.linalg.norm(br, axis=-1) * np.linalg.norm(bi, axis=-1) + 1e-8)
+                    diag_logger.log({'task': label, 't': t, 'f_corr': float(np.corrcoef(qr, qi)[0, 1]),
+                                     'f_rel_rmse': float(np.sqrt(np.mean((qi - qr) ** 2)) / (qr.std() + 1e-8)),
+                                     'f_bias': float(np.mean(qi - qr)), 'b_cos': float(cos.mean()),
+                                     'r_corr': float(np.corrcoef(rr, ri)[0, 1]), 'f_real_mean': float(qr.mean()),
+                                     'f_imag_mean': float(qi.mean())})
+            print('wrote', f"{LOGS_FOLDER}/diag_f.csv")
         evaluate(train_state, 0, False, NUM_EVALS_FINAL, 'zlabels')
         mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
         sys.exit(0)
@@ -1340,14 +1409,15 @@ if __name__ == '__main__':
 
         if (steps + 1) % EVAL_EACH_STEPS == 0:
             make_plot = (n_evals % PLOT_EACH_EVALS == 0)
-            results = evaluate(train_state, num_updates, make_plot, NUM_EVALS, 'eval')
+            modes = EVAL_MODES if ((steps + 1) % MPPI_EVAL_EACH == 0 or EVAL_MODE != 'both') else ['policy']
+            results = evaluate(train_state, num_updates, make_plot, NUM_EVALS, 'eval', modes)
             n_evals += 1
 
             num_cols = 4
             num_rows = N_BENCH // num_cols + int(N_BENCH % num_cols != 0)
             fig, axs = plt.subplots(num_rows, num_cols, figsize=(num_cols * 6, num_rows * 5))
             axs = np.atleast_1d(axs).flatten()
-            for mode in EVAL_MODES:
+            for mode in results:
                 rewards_logs[mode] = np.concatenate((rewards_logs[mode], results[mode][0].reshape(-1, 1)), axis=-1)
                 for i, (_, label, _) in enumerate(benchmarks):
                     axs[i].plot(rewards_logs[mode][i], label=MODE_NAMES[mode])
