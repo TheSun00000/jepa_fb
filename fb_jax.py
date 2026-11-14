@@ -406,6 +406,8 @@ if __name__ == '__main__':
 
     N_BENCH   = len(benchmarks)
     NUM_EVALS = 5             # episodes per task at the periodic evals (tag 'eval')
+    Z_LABELS = int(kwargs['z_labels']) if 'z_labels' in kwargs else 10_000   # labelled states per inferred z (one fresh draw per episode)
+    EVAL_CKPT = kwargs.get('eval_ckpt')   # eval only: load this checkpoint, run one eval (tag 'zlabels'), no training
     NUM_EVALS_FINAL = int(kwargs['num_evals_final']) if 'num_evals_final' in kwargs else 10   # final eval after the last update (tag 'final')
     print(NUM_TRAJECTORIES, TRAJECTORY_LEN, NUM_TRAJECTORIES * TRAJECTORY_LEN)
 
@@ -429,7 +431,7 @@ if __name__ == '__main__':
         fieldnames=["step", "mean_over_tasks"]
                    + [f"{label}_{s}" for _, label, _ in benchmarks for s in ("mean", "std")]
                    + [f"{label}_corr" for _, label, _ in benchmarks]
-                   + ["mean_corr_over_tasks", "time", "num_evals", "tag"],
+                   + ["mean_corr_over_tasks", "time", "num_evals", "tag", "z_labels"],
     )
 
     # ── Replay buffer ─────────────────────────────────────────────────────────────
@@ -944,7 +946,7 @@ if __name__ == '__main__':
             for b in ids:
                 reward_fn, _, param = benchmarks[b]
                 for _ in range(num_evals):
-                    eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), 10_000)
+                    eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
                     z, corr = agent.infer_z(backward_params, eval_obs, reward_fn(eval_aux, param))
                     zs.append(z); cs.append(corr)
             zs, cs = jnp.stack(zs), np.asarray(jnp.stack(cs))
@@ -1000,7 +1002,7 @@ if __name__ == '__main__':
         means, stds, corrs = run_benchmark(train_state, num_updates, make_plot, num_evals, '-final' if tag == 'final' else '')
         eval_row = {'step': num_updates, 'mean_over_tasks': float(means.mean()),
                     'mean_corr_over_tasks': float(corrs.mean()), 'time': time.time() - start_time,
-                    'num_evals': num_evals, 'tag': tag}
+                    'num_evals': num_evals, 'tag': tag, 'z_labels': Z_LABELS}
         for i, (_, label, _) in enumerate(benchmarks):
             eval_row[f'{label}_mean'] = float(means[i])
             eval_row[f'{label}_std']  = float(stds[i])
@@ -1008,7 +1010,18 @@ if __name__ == '__main__':
         eval_logger.log(eval_row)
         return means, stds, corrs
 
-    add_text_to_file(f'{LOGS_FOLDER}/info.txt', run_info(globals()))      # seed, job, git, command, protocol, data, versions, start time
+    add_text_to_file(f'{LOGS_FOLDER}/info.txt', run_info(globals(), z_labels=Z_LABELS))      # seed, job, git, command, protocol, data, versions, start time
+
+    if EVAL_CKPT:
+        with open(EVAL_CKPT, 'rb') as f:
+            loaded = pickle.load(f)
+        keys = ('fb_params', 'fb_target_params', 'actor_params')
+        restored = serialization.from_state_dict({k: getattr(train_state, k) for k in keys}, loaded)
+        train_state = train_state.replace(**restored)
+        print('loaded', EVAL_CKPT, '| z from', Z_LABELS, 'labelled states')
+        evaluate(train_state, 0, False, NUM_EVALS_FINAL, 'zlabels')
+        mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
+        sys.exit(0)
 
     for steps in tqdm(range(NUM_OUTER_STEPS)):
         num_updates = (steps + 1) * SCAN_LENGTH
