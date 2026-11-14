@@ -5,6 +5,7 @@
     tools/tracker_tick.py ok     # the previous tick's push succeeded: record it, then do this tick
 
 It runs tools/sync_from_hpc.sh --tick (CSVs + info.txt of the tracked run folders only), tools/queue.py submit and tools/hpc_status.py --diff, then prints one line:
+    SUBMIT BLOCKED ...               (extra line) queue.py refused to submit: commit and push the code
     UNCHANGED [IDLE]                 nothing to push
     PUSH [IDLE] <json writes>        the `writes` argument of one ArtifactData batch on the tracker (snapshot shards, with if_version)
 IDLE = no fb_jepa job queued, submitted or running: the loop can stop.
@@ -48,7 +49,9 @@ def main():
     code, out = run('env', 'SINCE=' + runs_index.TRACK_FROM, 'bash', 'tools/sync_from_hpc.sh', '--tick')
     if code:
         print('SYNC FAILED ' + out.strip().splitlines()[-1:][0] if out.strip() else 'SYNC FAILED')
-    run(sys.executable, 'tools/queue.py', 'submit', '--notify')
+    _, sub = run(sys.executable, 'tools/queue.py', 'submit', '--notify')
+    if 'not submitted' in sub:   # uncommitted or unpushed code: the queue is stuck until it is committed and pushed
+        print('SUBMIT BLOCKED ' + sub.strip().splitlines()[-1])
     code, out = run(sys.executable, 'tools/hpc_status.py', '--diff')
     if code:
         print('STATUS FAILED ' + ' | '.join(out.strip().splitlines()[-3:]))
