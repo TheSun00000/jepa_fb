@@ -35,3 +35,9 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - The 2026-10-05 gphi run taken as "gphi best" (`2026-10-05_15-17-36_TDMPC-FB-gphi-quadruped`, 666/660) passed `f_encoder_grad=1.0`. The core runs used the script default of 0.1 (Claude copied only "consistency 5, bcons 2" from the plan). With 0.1, gphi quadruped seed 1 (`2026-11-13_17-29-43_FBWM-gphi-quadruped`) peaked at 668 around 520k, then fell to ~300 from 620k on.
 - User, 2026-11-14: cancel the gphi seed-2 jobs (0.1) and requeue. gphi with `f_encoder_grad=1` is queued for seeds 1–3 as `fbj_core_gphiF1_*`. The seed-1 runs with 0.1 stay as an ablation of the FB gradient that reaches phi through F.
 - `fbwm.py` defaults stay as they are (0.1, as in `tdmpc_fb_3.py`). The flag is passed explicitly.
+
+## 2026-11-14: 500k updates, walker only, 1 seed, baselines TD-MPC (MPPI topline) and offline TD3 (policy topline)
+- **500k updates by default** in `fbwm.py`, `fb_jax.py`, `tdmpc_jax.py` (user: returns stagnate or drop after 500k). On walker, the 300–500k means already equal the 800k–1M means for FB, sepB and gphi.
+- **Focus on walker, 1 seed per config** while the method is being improved (user). The 5 walker tasks are stand, walk, vel8, run, flip.
+- **Baselines (user):** TD-MPC per task on the true reward is the topline for our MPPI (same planner, task-specific reward and Q). Offline TD3 per task is the topline for our policy (not written yet). Zero-shot FB is the floor for our policy.
+- **Targets:** fbwm MPPI close to TD-MPC; fbwm policy close to TD3, and at least FB.
