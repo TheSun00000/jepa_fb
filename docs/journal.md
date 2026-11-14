@@ -28,3 +28,4 @@ Dated session notes, newest last.
   - cheetah: sepB 524/354, gphi(0.1) 481/378, FB 414.
   - quadruped: FB 697, sepB 345/157, gphi(0.1) 347/391. sepB follows its October curve and then goes unstable late. gphi(0.1) collapses after 620k.
 - The collapse is explained by a config mistake: `f_encoder_grad` was 0.1 instead of 1 (see decisions). Cancelled gphi s2 (182240, 182243, 182246), queued `core_gphiF1` × 3 seeds.
+- The gphiF1 seed-2 jobs (184046–184048) failed after 2 minutes: they started in the same second as seed 1, so both runs got the same log folder name (`FileExistsError`). `fbwm.py` and `fb_jax.py` now append `_` on a collision (d1a5c04, pulled on JZ before the pending seed-3 jobs started). The 3 jobs are requeued. One tick sync also failed once (`tar: Error is not recoverable`) and worked on retry.
