@@ -17,7 +17,7 @@ module load cudnn/9.8.0.87-cuda
 conda activate jax_env
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
 
-CMD="python fbwm.py env_name=walker variant=gphi eval_mode=both consistency_coef=5 bcons_coef=2 seed=3 eval_each_steps=20"
+CMD="python fbwm.py env_name=walker variant=gphi eval_mode=both consistency_coef=5 bcons_coef=2 f_encoder_grad=1 seed=1 eval_each_steps=20"
 echo "Running: $CMD"
 mkdir -p models logs
-python fbwm.py env_name=walker variant=gphi eval_mode=both consistency_coef=5 bcons_coef=2 seed=3 eval_each_steps=20
+python fbwm.py env_name=walker variant=gphi eval_mode=both consistency_coef=5 bcons_coef=2 f_encoder_grad=1 seed=1 eval_each_steps=20
