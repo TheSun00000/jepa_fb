@@ -33,7 +33,7 @@ CURVE_POINTS = 60
 IGNORE_FLAGS = ('env_name', 'eval_mode')
 # The tracker starts empty: runs before this date (2026-09-29 -> 10-06) stay local in hpc/ and are never pushed (user, 2026-11-13).
 TRACK_FROM = '2026-11-13'
-POLICY_ONLY_FAMILIES = ('FB', 'FB-phi')     # scripts that only have a policy (no world model)
+POLICY_ONLY_FAMILIES = ('FB', 'FB-phi', 'TD3')     # scripts that only have a policy (no world model)
 ENVS = ('cheetah', 'walker', 'quadruped', 'antmaze')
 
 
@@ -133,8 +133,8 @@ def index_run(folder):
     rec['complete'] = ('finished' in meta) or rec['lastStep'] >= FULL_STEPS
     last = ev[-LAST_K:]
 
-    if 'return_mean' in cols:                                  # tdmpc_jax.py, one task, true reward
-        rec['mode'] = 'both' if 'policy_return_mean' in cols else 'mppi'
+    if 'return_mean' in cols:                                  # tdmpc_jax.py / td3_jax.py, one task, true reward
+        rec['mode'] = 'policy' if family in POLICY_ONLY_FAMILIES else ('both' if 'policy_return_mean' in cols else 'mppi')
         m_col, p_col, tasks = 'return_mean', ('policy_return_mean' if rec['mode'] == 'both' else None), []
     elif 'mean_over_tasks' in cols:
         has_pol = 'policy_mean_over_tasks' in cols
