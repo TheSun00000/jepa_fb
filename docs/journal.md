@@ -30,3 +30,15 @@ Dated session notes, newest last.
 - The collapse is explained by a config mistake: `f_encoder_grad` was 0.1 instead of 1 (see decisions). Cancelled gphi s2 (182240, 182243, 182246), queued `core_gphiF1` × 3 seeds.
 - The gphiF1 seed-2 jobs (184046–184048) failed after 2 minutes: they started in the same second as seed 1, so both runs got the same log folder name (`FileExistsError`). `fbwm.py` and `fb_jax.py` now append `_` on a collision (d1a5c04, pulled on JZ before the pending seed-3 jobs started). The 3 jobs are requeued. One tick sync also failed once (`tar: Error is not recoverable`) and worked on retry.
 - Automatic tracker refresh: `claude -p` (headless) has no ArtifactData tool, but a background session (`claude --bg`) does. Started `claude --bg -n fbj-tracker --model haiku '/loop 2m Tracker tick: follow CLAUDE.md "Cheap automatic refresh" exactly. ...'` (session 3bf2447c). Its first push landed at 13:21 (snapshot v8). It stops on IDLE and doesn't survive a reboot.
+
+## 2026-11-14 (evening)
+- C4 label sweep on walker, seed 1, frozen JEPA world model `2026-11-14_17-14-43_JEPAWM-walker`. Mean over 5 tasks, N = 100 / 300 / 1k / 3k / 10k:
+  - adapted baseline with full dataset access, MPPI (final): 594 / 519 / 623 / 678 / 664;
+  - adapted baseline with only the N labels (`q_data=labeled`), MPPI (final): 57 / 157 / 161 / 338 / 269;
+  - zero-shot gphiF1 MPPI: 349 / 390 / 463 / 477 / 472;
+  - zero-shot FB policy: 367 / 469 / 554 / 593 / 598.
+  So zero-shot wins clearly without dataset access and loses with it, and FB beats fbwm from N = 300 on. Runs: `TDMPC-adapt-walker-*` and `TDMPC-adaptL-walker-*` (17-53 to 21-5x), `zlabels` evals of the seed-1 checkpoints `2026-11-14_11-55-56_FBWM-gphi-walker` and `2026-11-13_17-30-10_FB-walker`.
+- Hypotheses for MPPI < policy in fbwm (analysis, not yet tested): F and B are queried on imagined latents they were never trained on (the terminal F is about 80% of the plan score); the MPPI softmax may be flat because values are divided by d; the 5-step reward sum exploits pointwise errors of Bᵀz.
+- GPU packing test (job 204735, cancelled after stage 2 at the user's request): one fbwm gphi run already keeps the H100 at 100% during training (4.04 s / 1k updates). Two copies run at 8.88 s / 1k each, 0.91× the throughput of one, so packing doesn't help.
+- Agreed: keep 500k updates. New eval schedule: policy every 25k, MPPI every 100k, final 10-episode eval at 500k (to implement: `mppi_eval_each`).
+- The zsh word-splitting bug (`for n in $NS`) made the first sweep jobs run N = 100 only; I requeued the rest with explicit values.
