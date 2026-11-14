@@ -81,9 +81,14 @@ if __name__ == '__main__':
 
     exp_name = f'FB-{ENV_NAME}'
 
-    LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
-    MODEL_SAVE_FOLDER = f'./models/{date_time_str}_{exp_name}'
-    os.makedirs(LOGS_FOLDER)
+    while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
+        LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
+        MODEL_SAVE_FOLDER = f'./models/{date_time_str}_{exp_name}'
+        try:
+            os.makedirs(LOGS_FOLDER)
+            break
+        except FileExistsError:
+            exp_name += '_'
     os.makedirs(MODEL_SAVE_FOLDER)
     print('LOGS_FOLDER      :', LOGS_FOLDER)
     print('MODEL_SAVE_FOLDER:', MODEL_SAVE_FOLDER)
