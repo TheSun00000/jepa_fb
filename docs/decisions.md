@@ -50,3 +50,9 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - **M1 (F-consistency on imagined latents):** along the H-step rollout of the update, `fcons_coef * sum_t rho^t ||F(h_hat_t, a_t, z) - sg(F_target(phi_target(s_t), a_t, z))||^2`, with the same z and actions as the FB loss. The gradient goes into F only.
 - **M2 (grounded dynamics):** the same loss, with the gradient also flowing into the dynamics and phi (`fcons_model_grad=1`).
 - Night plan (walker, seed 1, 500k, policy eval every 25k, MPPI every 100k, final 10 episodes): control gphiF1; M1 and M2 with `fcons_coef` in {0.1, 1}; eval-only diagnostics D1–D4 and M0 (normalised MPPI) on the existing checkpoints; the Dyna-style labels-only baseline. Seeds 2–3 only if a fix passes the gate (final MPPI ≥ its policy and > FB's 567 on the 5 walker tasks).
+
+## 2026-11-15 (night): autonomy while the user sleeps (user)
+- Claude may propose new experiments and run them overnight.
+- Method changes are allowed only if they are principled and **validated by another agent** first: an independent reviewer subagent gets the proposal, the evidence and the code diff, and must agree before anything is queued.
+- Each proposal, the reviewer's verdict and the runs it produced go into this file and the journal.
+- Unchanged: nothing on the cluster is cancelled or deleted, and CLFB is never touched.
