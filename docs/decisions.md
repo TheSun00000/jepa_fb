@@ -30,3 +30,8 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - **3 seeds (1, 2, 3) for now, not 5** (user): this is a first test of the gate. Seeds 4 and 5 can come later. Seeds are passed explicitly so the configs line up seed by seed.
 - **`eval_each_steps=20` (every 20k updates instead of 10k):** with evals every 10k, gphi takes about 111–119 min on H100, too close to the 2h dev limit, and the user wants walltimes under 2h for faster allocation. Measured from old runs, halving the evals gives about 80 min for sepB and 95–100 min for gphi. The reported number is the final 10-episode eval, which this doesn't change; only the curves get coarser. Walltimes asked: FB 0:50, sepB 1:40, gphi 1:50.
 - **`fb_jax.py` gets the same final eval as `fbwm.py`** (`tag=final`, 10 episodes), so FB is measured the same way as the other configs.
+
+## 2026-11-14: the gphi core config is consistency 5, bcons 2 **and f_encoder_grad 1**
+- The 2026-10-05 gphi run taken as "gphi best" (`2026-10-05_15-17-36_TDMPC-FB-gphi-quadruped`, 666/660) passed `f_encoder_grad=1.0`. The core runs used the script default of 0.1 (Claude copied only "consistency 5, bcons 2" from the plan). With 0.1, gphi quadruped seed 1 (`2026-11-13_17-29-43_FBWM-gphi-quadruped`) peaked at 668 around 520k, then fell to ~300 from 620k on.
+- User, 2026-11-14: cancel the gphi seed-2 jobs (0.1) and requeue. gphi with `f_encoder_grad=1` is queued for seeds 1–3 as `fbj_core_gphiF1_*`. The seed-1 runs with 0.1 stay as an ablation of the FB gradient that reaches phi through F.
+- `fbwm.py` defaults stay as they are (0.1, as in `tdmpc_fb_3.py`). The flag is passed explicitly.

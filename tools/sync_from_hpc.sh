@@ -24,7 +24,7 @@ mkdir -p "$DEST"
 if [ "${1:-}" = "--tick" ]; then
     SINCE="${SINCE:-2026-11-13}"
     $SSH_CMD "$REMOTE_HOST" "cd $REMOTE_DIR && ls -d logs/*/ | awk -v s='logs/$SINCE' '\$0 >= s' | while read d; do ls \"\$d\"*.csv \"\${d}info.txt\" 2>/dev/null; done | tar czf - -T -" \
-        | tar xzf - -C "$DEST"
+        | tar xmzf - -C "$DEST"   # -m: local mtimes (the cluster clock is ahead)
     exit $?
 fi
 exec rsync -a --info=stats1,progress0 --prune-empty-dirs --max-size="$MAX_SIZE" -e "$SSH_CMD" "$@" \
