@@ -83,9 +83,14 @@ if __name__ == '__main__':
 
     exp_name = f'TDMPC-{ENV_NAME}-{TASK}'
 
-    LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
-    MODEL_SAVE_FOLDER = f'./models/{date_time_str}_{exp_name}'
-    os.makedirs(LOGS_FOLDER)
+    while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
+        LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
+        MODEL_SAVE_FOLDER = f'./models/{date_time_str}_{exp_name}'
+        try:
+            os.makedirs(LOGS_FOLDER)
+            break
+        except FileExistsError:
+            exp_name += '_'
     os.makedirs(MODEL_SAVE_FOLDER)
     print('LOGS_FOLDER      :', LOGS_FOLDER)
     print('MODEL_SAVE_FOLDER:', MODEL_SAVE_FOLDER)
@@ -406,14 +411,18 @@ if __name__ == '__main__':
     reward_fn, _, reward_param = benchmarks[labels.index(TASK)]
     print('TASK:', TASK, '| reward param:', reward_param)
 
-    NUM_EVALS = 5
+    NUM_EVALS = 5             # episodes per periodic eval (tag 'eval'), rolled out in parallel
+    NUM_EVALS_FINAL = int(kwargs['num_evals_final']) if 'num_evals_final' in kwargs else 10   # final eval (tag 'final'), in rollouts of NUM_EVALS
+    assert NUM_EVALS_FINAL % NUM_EVALS == 0, 'num_evals_final must be a multiple of 5'
     print(NUM_TRAJECTORIES, TRAJECTORY_LEN, NUM_TRAJECTORIES * TRAJECTORY_LEN)
 
     BATCH_SIZE      = int(kwargs['batch_size']) if 'batch_size' in kwargs else 512
     HORIZON         = int(kwargs['horizon']) if 'horizon' in kwargs else 5
     EVAL_EACH_STEPS = 10      # in outer iterations (1 outer iteration = SCAN_LENGTH updates)
     SCAN_LENGTH     = 1_000
-    NUM_OUTER_STEPS = 1_000   # 1M updates in total
+    NUM_OUTER_STEPS = 500     # 500k updates in total (default 1M until 2026-11-14: returns plateau after ~500k)
+    if 'num_outer_steps' in kwargs:   # shorter runs, for smoke tests only (recorded in the protocol line of info.txt)
+        NUM_OUTER_STEPS = int(kwargs['num_outer_steps'])
     PLOT_EACH_EVALS = 5
     SAVE_EACH_STEPS = 100
     if 'eval_each_steps' in kwargs:
@@ -432,7 +441,7 @@ if __name__ == '__main__':
         filepath=f"{LOGS_FOLDER}/eval_log.csv",
         fieldnames=["step", "return_mean", "return_std"]
                    + (["policy_return_mean", "policy_return_std"] if EVAL_MODE == 'both' else [])
-                   + ["time"],
+                   + ["time", "num_evals", "tag"],
     )
 
     # ── Reward labelling: the datasets are reward-free, so we label them with the task's reward ──
@@ -965,14 +974,18 @@ if __name__ == '__main__':
         plt.savefig(f"{LOGS_FOLDER}/task{tag}-steps:{steps}.png")
         plt.close()
 
-    def run_eval(train_state, steps, make_plot, mode='mppi', tag=''):
-        obs_traj, aux_traj, phys_traj = rollout_batch(train_state, next_eval_key(), mode)
+    def run_eval(train_state, steps, make_plot, mode='mppi', tag='', num_evals=NUM_EVALS):
+        all_rewards = []
+        for _ in range(num_evals // NUM_EVALS):   # NUM_EVALS episodes per rollout
+            obs_traj, aux_traj, phys_traj = rollout_batch(train_state, next_eval_key(), mode)
 
-        # same metric as the FB script: sum over the trajectory of the task reward of the visited states
-        trajectory_rewards = np.asarray(reward_fn(jnp.asarray(aux_traj, dtype=jnp.float32), reward_param)).sum(axis=-1)
-        if ENV_NAME == 'antmaze' and 'goal' in TASK:
-            # goal tasks: 1 if the goal was reached at least once, else 0
-            trajectory_rewards = np.where(trajectory_rewards != -EVAL_STEPS, 1.0, 0.0)
+            # same metric as the FB script: sum over the trajectory of the task reward of the visited states
+            trajectory_rewards = np.asarray(reward_fn(jnp.asarray(aux_traj, dtype=jnp.float32), reward_param)).sum(axis=-1)
+            if ENV_NAME == 'antmaze' and 'goal' in TASK:
+                # goal tasks: 1 if the goal was reached at least once, else 0
+                trajectory_rewards = np.where(trajectory_rewards != -EVAL_STEPS, 1.0, 0.0)
+            all_rewards.append(trajectory_rewards)
+        trajectory_rewards = np.concatenate(all_rewards)
 
         print(TASK, f'[{MODE_NAMES[mode]}]', ':')
         print('\tRewards:', trajectory_rewards.tolist())
@@ -998,6 +1011,22 @@ if __name__ == '__main__':
     rewards_logs = {mode: [] for mode in EVAL_MODES}
     n_evals = 0
 
+    def evaluate(train_state, num_updates, make_plot, num_evals, tag):
+        """Every eval mode; one eval_log row (tag 'eval' = periodic, 'final' = after the last update)."""
+        start_time = time.time()
+        results = {}
+        for i, mode in enumerate(EVAL_MODES):
+            plot_tag = ('' if i == 0 else f'-{mode}') + ('-final' if tag == 'final' else '')
+            results[mode] = run_eval(train_state, num_updates, make_plot, mode, tag=plot_tag, num_evals=num_evals)
+        first = EVAL_MODES[0]
+        eval_row = {'step': num_updates, 'return_mean': float(results[first][0]), 'return_std': float(results[first][1]),
+                    'time': time.time() - start_time, 'num_evals': num_evals, 'tag': tag}
+        if EVAL_MODE == 'both':
+            eval_row['policy_return_mean'] = float(results['policy'][0])
+            eval_row['policy_return_std']  = float(results['policy'][1])
+        eval_logger.log(eval_row)
+        return results
+
     add_text_to_file(f'{LOGS_FOLDER}/info.txt', run_info(globals()))      # seed, job, git, command, protocol, data, versions, start time
 
     for steps in tqdm(range(NUM_OUTER_STEPS)):
@@ -1014,19 +1043,8 @@ if __name__ == '__main__':
 
         if (steps + 1) % EVAL_EACH_STEPS == 0:
             make_plot = (n_evals % PLOT_EACH_EVALS == 0)
-            start_time = time.time()
-            results = {}
-            for i, mode in enumerate(EVAL_MODES):
-                results[mode] = run_eval(train_state, num_updates, make_plot, mode, tag='' if i == 0 else f'-{mode}')
+            results = evaluate(train_state, num_updates, make_plot, NUM_EVALS, 'eval')
             n_evals += 1
-
-            first = EVAL_MODES[0]
-            eval_row = {'step': num_updates, 'return_mean': float(results[first][0]),
-                        'return_std': float(results[first][1]), 'time': time.time() - start_time}
-            if EVAL_MODE == 'both':
-                eval_row['policy_return_mean'] = float(results['policy'][0])
-                eval_row['policy_return_std']  = float(results['policy'][1])
-            eval_logger.log(eval_row)
 
             fig, ax = plt.subplots(1, 1, figsize=(6, 5))
             for mode in EVAL_MODES:
@@ -1043,5 +1061,9 @@ if __name__ == '__main__':
 
         if (steps + 1) % SAVE_EACH_STEPS == 0:
             save_agent(train_state, f"{MODEL_SAVE_FOLDER}/tdmpc_step:{num_updates}.pickle")
+
+    # ── Final evaluation: NUM_EVALS_FINAL episodes on the last checkpoint (the reported number of the run) ──
+    save_agent(train_state, f"{MODEL_SAVE_FOLDER}/tdmpc_final.pickle")
+    evaluate(train_state, NUM_OUTER_STEPS * SCAN_LENGTH, True, NUM_EVALS_FINAL, 'final')
 
     mark_finished(f'{LOGS_FOLDER}/info.txt', NUM_OUTER_STEPS * SCAN_LENGTH)

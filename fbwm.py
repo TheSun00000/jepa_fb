@@ -444,7 +444,7 @@ if __name__ == '__main__':
     HORIZON         = int(kwargs['horizon']) if 'horizon' in kwargs else 5
     EVAL_EACH_STEPS = 10      # in outer iterations (1 outer iteration = SCAN_LENGTH updates)
     SCAN_LENGTH     = 1_000
-    NUM_OUTER_STEPS = 1_000   # 1M updates in total
+    NUM_OUTER_STEPS = 500     # 500k updates in total (default 1M until 2026-11-14: returns plateau after ~500k)
     if 'num_outer_steps' in kwargs:   # shorter runs, for smoke tests only (recorded in the protocol line of info.txt)
         NUM_OUTER_STEPS = int(kwargs['num_outer_steps'])
     PLOT_EACH_EVALS = 5

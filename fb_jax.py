@@ -412,7 +412,7 @@ if __name__ == '__main__':
     BATCH_SIZE      = 1024
     EVAL_EACH_STEPS = 10      # in outer iterations (1 outer iteration = SCAN_LENGTH updates) -> torch: every 20k iterations
     SCAN_LENGTH     = 1_000
-    NUM_OUTER_STEPS = 1_000   # 1M updates in total (torch: 2M iterations, one update every 2)
+    NUM_OUTER_STEPS = 500     # 500k updates in total (default 1M until 2026-11-14: returns plateau after ~500k)
     if 'num_outer_steps' in kwargs:   # shorter runs, for smoke tests only (recorded in the protocol line of info.txt)
         NUM_OUTER_STEPS = int(kwargs['num_outer_steps'])
     PLOT_EACH_EVALS = 5
