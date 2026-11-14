@@ -67,6 +67,7 @@ dynamics (env simulator) but the learned reward/value, which separates model err
 **Question:** given N labeled states of a new task, is it better to infer z (zero training) or to fit a task-specific head?
 
 Use **our** reward-free world model (same encoder and dynamics) for all arms, so that only the task-adaptation part differs.
+**Decided 2026-11-14 (user):** the adapted baselines start from a clean, reward-free JEPA world model (consistency loss only, no FB terms), not from an fbwm checkpoint.
 
 | Arm | Reward in the planner | Terminal value | Per-task training |
 |---|---|---|---|
@@ -106,6 +107,11 @@ Use **our** reward-free world model (same encoder and dynamics) for all arms, so
 - Environments: cheetah, walker, quadruped, **antmaze** (none run yet), 3 seeds minimum before the main table.
 - Stretch: pixel observations (where a latent world model matters most); other exploration datasets (data-quality sensitivity); dataset size.
 
+### Later idea (user, 2026-11-14): FB as a layer on a pretrained, frozen world model  `[later]`
+Once the main results hold: start from a world model pretrained without rewards and frozen, and add only the FB part
+(B, F, the actor) on top of it to make it zero-shot. The pitch becomes "any pretrained latent world model gains zero-shot
+task inference for the cost of an FB head". Not now.
+
 ## 9. Order of work
 
 1. §3 protocol and script merge.
@@ -129,3 +135,4 @@ Use **our** reward-free world model (same encoder and dynamics) for all arms, so
 - 2026-11-13: smoke test of `fbwm.py` passed on JZ (job 153137). `fb_jax.py` gets the final 10-episode eval; `fbwm.py` logs eval time per mode. §4.1 core runs queued with 3 seeds (27 jobs).
 - 2026-11-14: gphi core config corrected to f_encoder_grad=1 (gphi seed 2 with 0.1 cancelled, gphiF1 × 3 seeds queued).
 - 2026-11-14: focus on walker, 1 seed, 500k updates. Baselines: TD-MPC per task (MPPI topline), offline TD3 per task (policy topline, to write), zero-shot FB (policy floor). TD-MPC walker × 5 tasks queued.
+- 2026-11-14: C4 baseline = reward-free JEPA world model + per-task reward/Q heads (not an fbwm checkpoint). Added the later idea of FB on top of a frozen pretrained world model.

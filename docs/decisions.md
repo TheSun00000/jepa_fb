@@ -41,3 +41,7 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - **Focus on walker, 1 seed per config** while the method is being improved (user). The 5 walker tasks are stand, walk, vel8, run, flip.
 - **Baselines (user):** TD-MPC per task on the true reward is the topline for our MPPI (same planner, task-specific reward and Q). Offline TD3 per task is the topline for our policy (not written yet). Zero-shot FB is the floor for our policy.
 - **Targets:** fbwm MPPI close to TD-MPC; fbwm policy close to TD3, and at least FB.
+
+## 2026-11-14: the C4 adaptation baseline uses a clean reward-free JEPA world model
+- User: no fbwm checkpoint, because the baseline needs a clean world model. Pretrain encoder and dynamics with the latent consistency loss only (no FB, reward or value terms) and freeze them. Then, per task, train reward, Q and policy heads on N labeled states for k updates, and plan with the same MPPI.
+- Parked for later (research_plan §8): FB as a layer on top of a pretrained, frozen world model.
