@@ -17,6 +17,16 @@ if ! $SSH_CMD "$REMOTE_HOST" true 2>/dev/null; then
 fi
 
 mkdir -p "$DEST"
+
+# --tick (tools/tracker_tick.py, every 2 min): only the CSVs and info.txt of the run folders since SINCE (the tracked ones),
+# as one tar stream over one ssh call (~4 s; rsync took 10-110 s for the same 48 files). No .slurm_logs (hpc_status.py reads
+# their tails on the cluster itself), no code, no scripts. Overwrites the local copies of those files, deletes nothing.
+if [ "${1:-}" = "--tick" ]; then
+    SINCE="${SINCE:-2026-11-13}"
+    $SSH_CMD "$REMOTE_HOST" "cd $REMOTE_DIR && ls -d logs/*/ | awk -v s='logs/$SINCE' '\$0 >= s' | while read d; do ls \"\$d\"*.csv \"\${d}info.txt\" 2>/dev/null; done | tar czf - -T -" \
+        | tar xzf - -C "$DEST"
+    exit $?
+fi
 exec rsync -a --info=stats1,progress0 --prune-empty-dirs --max-size="$MAX_SIZE" -e "$SSH_CMD" "$@" \
     --include='/logs/' --include='/logs/*/' \
     --include='/logs/*/*.csv' --include='/logs/*/info.txt' \
