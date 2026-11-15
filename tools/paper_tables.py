@@ -70,7 +70,7 @@ def put(method, env, seed, n, score, folder, note=None):
         return
     S[(method, env, int(seed), int(n))] = (score, folder)
     if note:
-        NOTES[(method, env)].add(note)
+        NOTES[(method, env, int(n))].add(note)
 
 
 # toplines: one run per (env, task, seed), final eval, mean over tasks per seed
@@ -106,7 +106,8 @@ for fam, method in (('TDMPC-adapt', 'adapt_full'), ('TDMPC-adaptLM', 'adapt_labe
         if all(t in tasks for t in TASKS.get(env, [])):
             put(method, env, seed, n, st.mean(tasks[t][0] for t in TASKS[env]), tasks[TASKS[env][0]][1])
 
-# zero-shot, label sweep (eval-only, 20 episodes): fbwm (z50 + lstsq + dataset Cov) and FB
+# zero-shot, label sweep (eval-only, 20 episodes): fbwm (z50 + lstsq + dataset Cov, root-check MPPI preferred) and FB (500k preferred)
+LATE = defaultdict(list)
 for folder, kw, ev in runs('2026-11-1[5-9]_*'):
     if 'eval_ckpt' not in kw or str(kw.get('num_evals_final')) != '20' or 'z_labels' not in kw:
         continue
@@ -115,10 +116,18 @@ for folder, kw, ev in runs('2026-11-1[5-9]_*'):
         continue
     r, env, n = r[0], kw['env_name'], int(kw['z_labels'])
     if '_FB-' in folder:
-        put('fb', env, kw['seed'], n, f(r['mean_over_tasks']), folder, 'walker FB checkpoints: 1M updates' if env == 'walker' else None)
-    elif kw.get('variant') == 'gphi' and kw.get('mppi_reward') == 'lstsq' and kw.get('z_cov') == 'dataset' and 'z_dim' not in kw:
-        put('fbwm', env, kw['seed'], n, f(r['mean_over_tasks']), folder)
-        put('fbwm_policy', env, kw['seed'], n, f(r['policy_mean_over_tasks']), folder)
+        old_ckpt = any(t in kw['eval_ckpt'] for t in ('2026-11-13', '2026-11-14'))   # 1M-update walker checkpoints
+        LATE['fb_old' if old_ckpt else 'fb'].append(('fb', env, kw['seed'], n, f(r['mean_over_tasks']), folder))
+    elif (kw.get('variant') == 'gphi' and kw.get('mppi_reward') == 'lstsq' and kw.get('z_cov') == 'dataset' and 'z_dim' not in kw
+          and not any(k in kw for k in ('horizon', 'mppi_init_policy', 'mixture_coef', 'mppi_terminal_only', 'mppi_norm'))):
+        tier = 'root' if str(kw.get('mppi_root_check')) in ('1', 'True', 'true') else 'noroot'
+        LATE[tier].append(('fbwm', env, kw['seed'], n, f(r['mean_over_tasks']), folder))
+        LATE[tier].append(('fbwm_policy', env, kw['seed'], n, f(r['policy_mean_over_tasks']), folder))
+
+for tier, note in (('root', None), ('noroot', 'MPPI without the root check'), ('fb', None)):
+    for (m, env, seed, n, score, folder) in LATE[tier]:
+        if (m, env, int(seed), int(n)) not in S:
+            put(m, env, seed, n, score, folder, note)
 
 # fallbacks for the main table only (N = 10k) where no eval-only sweep exists yet: training-run finals, flagged
 for folder, kw, ev in runs('2026-11-15_*'):
@@ -132,8 +141,13 @@ for folder, kw, ev in runs('2026-11-15_*'):
     if '_FB-' in folder and ('fb', env, int(seed), 10000) not in S:
         put('fb', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final (no z sweep yet)')
     if 'FBWM-gphi' in folder and kw.get('mppi_reward') == 'lstsq' and not kw.get('fcons_coef') and ('fbwm', env, int(seed), 10000) not in S:
-        put('fbwm', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final, Cov(B) from the labels')
+        put('fbwm', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final' + ('' if str(kw.get('mppi_root_check')) in ('1', 'True') else ', no root check') + ('' if kw.get('z_cov') == 'dataset' else ', Cov(B) from the labels'))
         put('fbwm_policy', env, seed, 10000, f(fin['policy_mean_over_tasks']), folder, 'training-run final')
+
+# last resort: the 1M-update walker FB checkpoints
+for (m, env, seed, n, score, folder) in LATE['fb_old']:
+    if (m, env, int(seed), int(n)) not in S:
+        put(m, env, seed, n, score, folder, 'FB checkpoints: 1M updates')
 
 # ── main table ─────────────────────────────────────────────────────────────────────────────────────────────────────
 ROWS = [
@@ -146,7 +160,7 @@ ROWS = [
 table = {'title': 'Main results, N = 10k labelled states',
          'protocol': ('Mean over the environment\'s tasks of the final evaluation (20 episodes for zero-shot methods, 10 for the toplines '
                       'and adapted baselines), then mean ± 95% CI over seeds (n = seeds). fbwm: gphi, z_dim 50, MPPI with the lstsq '
-                      'per-step reward and Cov(B) from 100k dataset states. 500k updates unless noted.'),
+                      'per-step reward, Cov(B) from 100k dataset states and the root check (never below the policy by F at the real state). 500k updates unless noted.'),
          'envs': ENVS, 'groups': []}
 for gname, items in ROWS:
     g = {'name': gname, 'rows': []}
@@ -156,8 +170,8 @@ for gname, items in ROWS:
             vals = [S[k][0] for k in S if k[0] == key and k[1] == env and k[3] == 10000]
             c = mean_ci(vals)
             if c:
-                if NOTES.get((key, env)):
-                    c['note'] = '; '.join(sorted(NOTES[(key, env)]))
+                if NOTES.get((key, env, 10000)):
+                    c['note'] = '; '.join(sorted(NOTES[(key, env, 10000)]))
                 cells[env] = c
         g['rows'].append({'key': key, 'label': label, 'training': training, 'ours': key == 'fbwm', 'cells': cells})
     table['groups'].append(g)
