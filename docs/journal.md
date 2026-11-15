@@ -79,3 +79,9 @@ Dated session notes, newest last.
 - Improvement attempts, seed 1: discount 0.98 / 0.99 hurt on both envs. No hyperparameter fix (batch, lr, q_loss_coef, tau, b_ortho) stabilises z200 on cheetah; the FB off-diagonal term scales with d rather than diverging. BTD (user's design, `fbwm_btd.py`): cheetah z200 L50 342 / 119 (best MPPI at z200, still below z50), L100 168 / 224, walker z50 596 / 530, cheetah z50 284 / 144. Dropped (user). mix_ratio 0.8 / 1.0 and hidden_dim 2048 don't fix cheetah z200 either.
 - Quadruped z_dim: 50 → 598 / 662, 100 → 532 / 611, 200 → 560 / 476. z50 stays best; seeds 2–3 queued, with FB seeds 2–3.
 - Best configs: walker gphi z200 + lstsq (651 / 523, 3 seeds); cheetah gphi z50 + lstsq (391–397 / 358–372, 3 seeds); quadruped gphi z50 + lstsq (598 / 662, seed 1). MPPI clearly beats the policy only at large z_dim (walker).
+- **Evening results (seed 1 unless noted):**
+  - BTD actor-only at z200 (`btd_actor_only=1`): cheetah 134 / 75 (collapse); walker 638 / 593 (the policy +70 over plain z200's 523, MPPI about the same).
+  - Consistency 2: cheetah z50 430 / 329 (vs 403 / 355 with consistency 5 + root check, 3 seeds); walker z200 615 / 481 (vs 651 / 523).
+  - Quadruped consistency 2, 3 seeds: 660 / 637.
+  - Main table with root-check MPPI (z50, 3 seeds): walker 622 / 574, cheetah 403 / 355, quadruped 587 / 599 (seed 2: 468 / 540).
+  - FB quadruped from the label sweeps: 583 (3 seeds).
