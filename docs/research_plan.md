@@ -123,6 +123,30 @@ task inference for the cost of an FB head". Not now.
   - It matches the full-dataset adapted baseline from N = 3k on. At N ≤ 1k that baseline wins.
 - Open: small N (ridge sweep running), the actor at large z_dim, other envs (cheetah, quadruped), and a reviewer pass on the whole C1/C4 story before writing.
 
+
+### Paper status and handoff (2026-11-15 night): read this first to write the draft
+- **Configuration of "ours" (fbwm), the same for every env:** `fbwm.py variant=gphi` with z_dim 50, consistency_coef 2, bcons_coef 2, f_encoder_grad 1, `mppi_reward=lstsq z_cov=dataset mppi_root_check=1`, 500k updates.
+  - lstsq: MPPI's per-step reward is the L2 projection of R onto span(B).
+  - root check: execute the policy's action when F at the real latent rates it higher than MPPI's first action.
+  - Protocol: z from N = 10k labelled states, final eval with 20 episodes per task, 3 seeds.
+- **Main table and label-budget figure:** the tracker overview (https://claude.ai/artifact/3UineFBuRZiwE4gzMLRkhn), collection `paper` (`main_table`, `label_curve`), built by `python tools/paper_tables.py` from `hpc/logs` (writes `hpc/status/paper_*.json`).
+  - Rows: TD-MPC and offline TD3 (per-task toplines), the adaptation baselines (reward-free JEPA world model + TD-MPC heads: full dataset, and labels-only Dyna), FB, fbwm policy, fbwm MPPI.
+  - Envs: walker, cheetah, quadruped (antmaze and other zero-shot methods out of scope for now).
+  - Status: baselines 3 seeds everywhere. fbwm paper config: quadruped 3 seeds (MPPI 660 / policy 637); cheetah s1 (430 / 329), s2–3 running; walker s1–3 running. Label sweeps of these checkpoints are queued or running on V100.
+- **Story so far, with the evidence in journal and decisions:**
+  - fbwm > FB on every env.
+  - MPPI > its own policy with the root check: +48 on walker and cheetah at consistency 5. With consistency 2: all 3 quadruped seeds, +23 on average.
+  - Without dataset access at test time, zero-shot beats the adapted baselines for N ≤ 3k on walker, and at every N on cheetah and quadruped. With dataset access, the full-dataset adapted baseline wins on walker only.
+  - Still below the per-task toplines.
+- **Ablations for the paper** (data exists):
+  - lstsq vs mean per-step reward: walker +52 (3 seeds), cheetah 0.
+  - Root check vs no root check, and the other planner variants (b) / (c): 7 checkpoints.
+  - z_dim 50 / 100 / 200: walker z200 651 / 523, cheetah collapses above 50.
+  - M1/M2 F-consistency: no gain with lstsq.
+  - MPPI horizon, terminal-only, softmax normalisation: no effect.
+  - Cov(B) from labels vs dataset: equal at z50.
+  - Negative results: BTD, mix_ratio, hidden_dim, discount, TD hyperparameters at z200.
+
 ## 9. Order of work
 
 1. §3 protocol and script merge.
@@ -148,3 +172,4 @@ task inference for the cost of an FB head". Not now.
 - 2026-11-14: focus on walker, 1 seed, 500k updates. Baselines: TD-MPC per task (MPPI topline), offline TD3 per task (policy topline, to write), zero-shot FB (policy floor). TD-MPC walker × 5 tasks queued.
 - 2026-11-14: C4 baseline = reward-free JEPA world model + per-task reward/Q heads (not an fbwm checkpoint). Added the later idea of FB on top of a frozen pretrained world model.
 - 2026-11-15: night results. lstsq planner reward + z_dim 200 give fbwm MPPI 666 on walker (3 seeds, FB 567); M1/M2 not needed; C4 label sweep updated.
+- 2026-11-15 (night): paper configuration fixed (gphi z50, consistency 2, lstsq, dataset Cov, root check); main table and label-budget figure in the tracker; handoff section for the paper draft.
