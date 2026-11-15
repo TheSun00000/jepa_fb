@@ -85,3 +85,4 @@ Dated session notes, newest last.
   - Quadruped consistency 2, 3 seeds: 660 / 637.
   - Main table with root-check MPPI (z50, 3 seeds): walker 622 / 574, cheetah 403 / 355, quadruped 587 / 599 (seed 2: 468 / 540).
   - FB quadruped from the label sweeps: 583 (3 seeds).
+- **End of session (2026-11-15, 23:30):** the main table and label-budget figure are final in the tracker (paper config: gphi z50, consistency 5, lstsq, dataset Cov, root check; 3 seeds everywhere). Consistency 2 was tried as the paper config and rejected (worse on walker and cheetah). The handoff for the paper draft is in research_plan.md ("Paper status and handoff"). Anything still on the cluster is eval-only and not needed for the table. The systemd queue timer stays active; the tracker loop isn't running.
