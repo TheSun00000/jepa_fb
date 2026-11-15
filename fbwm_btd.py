@@ -4,6 +4,7 @@ A pool of btd_count task vectors z = sqrt(d) * normalize(mean_{s in segment} B(s
 steps: the FB task vector of the reward "visit the states of this segment". It is recomputed every btd_refresh x 1000 updates from
 the target B (EMA). A fraction btd_ratio of each batch's z is drawn from the pool; the rest follows fbwm.py (uniform on the sphere,
 mix_ratio of them replaced by B(random state)). Everything else is fbwm.py. Run folders FBWMBTD-<variant>-<env>.
+btd_actor_only=1: the FB loss uses fbwm.py's z distribution, and only the actor is trained on the pool's task vectors.
 """
 import os
 LOCAL = 'nazim' in os.getcwd()
@@ -107,6 +108,8 @@ if __name__ == '__main__':
     BTD_COUNT   = int(kwargs['btd_count']) if 'btd_count' in kwargs else 100_000  # pool size
     BTD_REFRESH = int(kwargs['btd_refresh']) if 'btd_refresh' in kwargs else 10  # recompute the pool every BTD_REFRESH x 1000 updates
     BTD_RATIO   = float(kwargs['btd_ratio']) if 'btd_ratio' in kwargs else 1.0  # fraction of each batch's z drawn from the pool
+    # btd_actor_only=1 (user, 2026-11-15): the FB loss keeps fbwm.py's z (uniform, mix_ratio of B(s)); only the actor is trained on pool z
+    BTD_ACTOR_ONLY = str(kwargs.get('btd_actor_only', '0')).lower() in ('1', 'true')
 
     while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
         LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
@@ -966,7 +969,11 @@ if __name__ == '__main__':
             k_btd, k_btd_mask = jax.random.split(jax.random.fold_in(k_z, 7))
             z_btd    = z_pool[jax.random.randint(k_btd, (B,), 0, z_pool.shape[0])]
             btd_mask = jax.random.uniform(k_btd_mask, (B, 1)) < BTD_RATIO
-            z        = jnp.where(btd_mask, z_btd, z)
+            if BTD_ACTOR_ONLY:
+                z_pi = z_btd                  # the actor: pool task vectors only; the FB loss and its target action keep z
+            else:
+                z    = jnp.where(btd_mask, z_btd, z)
+                z_pi = z
 
             # ── constants: computed outside the differentiated functions below, so no gradient flows into them ──
             target_h = self.encode(ts.target_params['encoder'], obs[1:])                           # (H,B,L) EMA phi(s_t)
@@ -1086,9 +1093,9 @@ if __name__ == '__main__':
 
             # ── policy: maximise min_i F_i(phi(s), a, z)^T z on the real latents (phi(s) is a constant here) ──
             def pi_loss_fn(pi_params):
-                a = self.pi(pi_params, h_in, z, k_pi, c.stddev)
-                F1, F2 = self.F(f_params, h_in, a, z)
-                Q = jnp.minimum((F1 * z).sum(-1), (F2 * z).sum(-1))
+                a = self.pi(pi_params, h_in, z_pi, k_pi, c.stddev)
+                F1, F2 = self.F(f_params, h_in, a, z_pi)
+                Q = jnp.minimum((F1 * z_pi).sum(-1), (F2 * z_pi).sum(-1))
                 return -Q.mean(), Q.mean()
 
             (pi_loss, q_mean), pi_grads = jax.value_and_grad(pi_loss_fn, has_aux=True)(ts.pi_params)

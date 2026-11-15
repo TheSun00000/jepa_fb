@@ -100,3 +100,6 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - Eval-only, 7 checkpoints: with `mppi_root_check=1`, MPPI ≥ policy on all of them (walker z200 615 vs 538; cheetah z50 406 vs 374; quadruped z50 679 vs 671). Without it, MPPI fell below the policy on cheetah seed 3 and on quadruped.
 - The main-table and figure evals of fbwm are redone with `mppi_root_check=1` (label sweeps on the z50 checkpoints, quadruped included). New quadruped trainings use it too.
 - Quadruped search, seed 1: consistency_coef 2 → 661 / 653 (best); being verified with seeds 2–3. FB walker is redone at 500k updates (3 seeds: 600 / 503 / 598), replacing the 1M checkpoints in the table and figure.
+
+## 2026-11-15 (evening): BTD for the actor only (user's proposal)
+- `btd_actor_only=1` in fbwm_btd.py: the FB loss (and its TD-target action) keeps fbwm.py's z distribution (uniform, mix_ratio of B(s)), so F and B are learned for all z. Only the actor loss uses the pool's task vectors (mean of B over 50-step subtrajectories), the z's of real tasks. Test: z200, cheetah and walker, seed 1, root-check MPPI.
