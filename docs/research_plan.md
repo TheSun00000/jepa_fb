@@ -112,6 +112,17 @@ Once the main results hold: start from a world model pretrained without rewards 
 (B, F, the actor) on top of it to make it zero-shot. The pitch becomes "any pretrained latent world model gains zero-shot
 task inference for the cost of an FB head". Not now.
 
+
+### Status after the night of 2026-11-15 (walker, see journal and decisions)
+- **Planner fix (reviewer-approved):** `mppi_reward=lstsq`. MPPI's per-step reward uses the L2 projection of R onto span(B); the policy and terminal value keep z = E[BR].
+- **z_dim = 200** (corr of R with span(B) 0.78 → 0.92).
+- With both, fbwm MPPI = **666** over 3 seeds (control without M2: 651), against FB 567 (FB doesn't gain from z_dim: 573–580), offline TD3 685 and TD-MPC 792.
+- M1/M2 (F-consistency on imagined latents) are not needed once lstsq is used. The policy weakens at z_dim 200 (about 500) and collapses at 400.
+- C4 label sweep (z200 + lstsq, MPPI): N = 100 / 300 / 1k / 3k / 10k gives 348 / 484 / 582 / 648 / 671.
+  - It beats FB from N = 300 on, and beats the labels-only adapted baselines at every N.
+  - It matches the full-dataset adapted baseline from N = 3k on. At N ≤ 1k that baseline wins.
+- Open: small N (ridge sweep running), the actor at large z_dim, other envs (cheetah, quadruped), and a reviewer pass on the whole C1/C4 story before writing.
+
 ## 9. Order of work
 
 1. §3 protocol and script merge.
@@ -136,3 +147,4 @@ task inference for the cost of an FB head". Not now.
 - 2026-11-14: gphi core config corrected to f_encoder_grad=1 (gphi seed 2 with 0.1 cancelled, gphiF1 × 3 seeds queued).
 - 2026-11-14: focus on walker, 1 seed, 500k updates. Baselines: TD-MPC per task (MPPI topline), offline TD3 per task (policy topline, to write), zero-shot FB (policy floor). TD-MPC walker × 5 tasks queued.
 - 2026-11-14: C4 baseline = reward-free JEPA world model + per-task reward/Q heads (not an fbwm checkpoint). Added the later idea of FB on top of a frozen pretrained world model.
+- 2026-11-15: night results. lstsq planner reward + z_dim 200 give fbwm MPPI 666 on walker (3 seeds, FB 567); M1/M2 not needed; C4 label sweep updated.
