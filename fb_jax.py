@@ -843,6 +843,8 @@ if __name__ == '__main__':
     fb_config = FBConfig(batch_size=BATCH_SIZE)
     if 'discount' in kwargs:
         fb_config = dataclasses.replace(fb_config, discount=float(kwargs['discount']))
+    if 'z_dim' in kwargs:   # size of B, F's output and z (default 50)
+        fb_config = dataclasses.replace(fb_config, z_dim=int(kwargs['z_dim']))
     print(fb_config)
     with open(f'{LOGS_FOLDER}/info.txt', 'a') as file:
         file.write(str(fb_config) + '\n')
