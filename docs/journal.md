@@ -42,3 +42,13 @@ Dated session notes, newest last.
 - GPU packing test (job 204735, cancelled after stage 2 at the user's request): one fbwm gphi run already keeps the H100 at 100% during training (4.04 s / 1k updates). Two copies run at 8.88 s / 1k each, 0.91× the throughput of one, so packing doesn't help.
 - Agreed: keep 500k updates. New eval schedule: policy every 25k, MPPI every 100k, final 10-episode eval at 500k (to implement: `mppi_eval_each`).
 - The zsh word-splitting bug (`for n in $NS`) made the first sweep jobs run N = 100 only; I requeued the rest with explicit values.
+
+## 2026-11-15 (night): wave 1 results (walker, seed 1)
+- Phase 2, 500k, final MPPI / policy: control 470 / 527; M1 fcons 0.1: 557 / 580; M1 fcons 1: 551 / 519; M2 fcons 0.1: 591 / 611; **M2 fcons 1: 590 / 574, which passes the gate** (≥ its policy and > 567). MPPI averaged over 300k–500k: control 527, M2 fcons 1: 547, so the gap is within single-seed noise. Runs: `2026-11-15_00-3x_FBWM-gphi-walker*`.
+- Phase 1 diagnostics on the seed-1 checkpoints:
+  - MPPI doesn't change with the horizon (gphi H = 1/3/5: 501 / 453 / 484).
+  - F on imagined latents along dataset actions stays close to F on real latents (correlation ≥ 0.95, relative error 0.17 → 0.33, no bias).
+  - Normalising the elite values changes nothing (spread about 0.013).
+  - Terminal-F-only: +134 for sepB (its B-head reward on imagined latents hurts it), no change for gphi.
+  - So the off-distribution and flat-softmax hypotheses are weak or rejected. The likely bottleneck is the zero-shot objective itself: Bᵀz has correlation 0.57 with the true reward, and planning can't beat a policy that optimises the same objective.
+- Wave 2: M2 fcons 1 and control, seeds 2–3 (gate); M2 fcons 1 with z_dim 100 and 200, seed 1 (hyperparameter of the agreed method).
