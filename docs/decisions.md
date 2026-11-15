@@ -67,3 +67,8 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - `z_cov=dataset` (default `labeled`, unchanged): `E_ρ[BBᵀ]` is estimated on 100k unlabelled dataset states, and `E[B R]` still comes from the N labelled states. Same estimand, lower variance, no selection bias. The reviewer approved it and checked the diff.
 - Reviewer caveat: `w = Cov⁻¹ E_N[BR]` still amplifies label noise in the low-eigenvalue directions (`d_eff/N`), and ridge 1e-2 is effectively unregularised at d = 200, N = 100. Recommendation: scale the ridge with d/N, or pick it so d_eff is well below N. Tested tonight as a hyperparameter sweep (ridge 0.01 / 0.1 / 1).
 - Reporting rules: N counts reward labels only; `E[BBᵀ]` uses 100k unlabelled dataset states; the matched baseline is the full-dataset adapted arm (the labels-only arms had less information). The `<task>_corr_lstsq` column is the in-sample fit on the labelled states, not the w used by MPPI.
+
+## 2026-11-15 (morning): findings that bound the claims
+- The lstsq planner reward helps on walker (+52 at z_dim 50 over 3 seeds; much more at z_dim 200) and **not on cheetah** (paired: 501 vs 501). It's not a general improvement yet.
+- z_dim above 50 breaks FB training on cheetah (FB 300 → 188 at z100 → 97 at z200), so the safe default is z_dim 50.
+- At z_dim 50, Cov(B) from the whole dataset (computed once, task-independent, as the user suggested) matches the in-sample estimate. Candidate default: `z_cov=dataset` at z_dim 50; not changed yet, the user decides.
