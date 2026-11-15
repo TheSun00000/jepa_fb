@@ -89,3 +89,9 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - Hypothesis: at z_dim 200, uniform z are almost orthogonal to real task vectors, so the actor and F waste capacity on them; that would explain why the policy collapses on cheetah z200 while the reward basis improves (corr_lstsq 0.82).
 - Test (user: cheetah z200 only): btd_len 50 and 100. Also mix_ratio 0.8 / 1.0 and hidden_dim 2048 in fbwm.py (hyperparameters; `hidden_dim`/`feature_dim` are now flags).
 - The hyperparameter fixes (batch 2048, lr 5e-5, q_loss_coef 0.0025, tau 0.005, b_ortho 4) didn't stabilise cheetah z200: final MPPI 141–270, policy 35–119. The FB off-diagonal term levels off at about 950 at z200 (about 195 at z50), so it scales with d rather than diverging. Discount 0.98/0.99 hurt on both envs.
+
+## 2026-11-15: MPPI that is never worse than the policy (user approved (a); (b) and (c) are hyperparameters)
+- (a) `mppi_root_check=1`: after planning, compare min_k F_k(h_0, a, z)ᵀz at the real current latent for MPPI's first action and for the policy's deterministic action, and execute the better one. MPPI can then only override the policy when F, evaluated where it was trained, agrees.
+- (b) `mppi_init_policy=1`: MPPI's initial mean is the policy's deterministic 5-step trajectory through the model (instead of the shifted previous plan), with `mppi_init_std` (default 2.0, tried 0.5).
+- (c) `mixture_coef` as a flag (default 0.05; tried 0.25 / 0.5).
+- Tested eval-only on the best-config checkpoints of the 3 envs (walker z200 s1–3, cheetah z50 s1–3, quadruped z50 s1).

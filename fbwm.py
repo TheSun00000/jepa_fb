@@ -759,6 +759,9 @@ if __name__ == '__main__':
         momentum:            float = 0.1
         mppi_terminal_only:  bool  = False   # eval diagnostic: plan with the terminal F only (no per-step B reward)
         mppi_norm:           bool  = False   # MPPI softmax on elite values standardised by their std (scale-free temperature)
+        mppi_root_check:     bool  = False   # (a) execute the policy's action if F at the real latent rates it above MPPI's first action
+        mppi_init_policy:    bool  = False   # (b) initial MPPI mean = the policy's deterministic trajectory through the model
+        mppi_init_std:       float = 2.0     # initial MPPI std (TD-MPC: 2.0)
 
     class TDMPCFBTrainingState(flax.struct.PyTreeNode):
         params:                Any          # trunk + dynamics: {'encoder' (phi), 'dynamics'}
@@ -1137,11 +1140,20 @@ if __name__ == '__main__':
                 _h = self.next(params, _h, a)
             pi_actions = jnp.stack(pi_actions)                                      # (H, num_pi, A)
 
+            if c.mppi_init_policy:   # (b) the policy's deterministic trajectory through the model
+                _hd, pol_traj = h0[None], []
+                for t in range(H):
+                    a_d = self.pi(pi_params, _hd, z_task[None], None, 0.0)
+                    pol_traj.append(a_d[0])
+                    _hd = self.next(params, _hd, a_d)
+                pol_traj = jnp.stack(pol_traj)                                      # (H, A)
             h    = jnp.tile(h0, (c.num_samples + num_pi, 1))
             z    = jnp.tile(z_task, (c.num_samples + num_pi, 1))
             w    = jnp.tile(w_task, (c.num_samples + num_pi, 1))       # per-step reward weights (= z unless mppi_reward=lstsq)
             mean = jnp.where(use_prev, jnp.concatenate([prev_mean[1:], jnp.zeros((1, A))], axis=0), jnp.zeros((H, A)))
-            std  = 2.0 * jnp.ones((H, A))
+            if c.mppi_init_policy:
+                mean = pol_traj
+            std  = c.mppi_init_std * jnp.ones((H, A))
 
             for _ in range(c.iterations):
                 key, k_noise, k_val = jax.random.split(key, 3)
@@ -1163,7 +1175,14 @@ if __name__ == '__main__':
 
             key, sub = jax.random.split(key)
             chosen = jax.random.categorical(sub, logits)
-            return elite_actions[0, chosen], mean, spread                           # eval mode: no exploration noise
+            action = elite_actions[0, chosen]
+            if c.mppi_root_check:   # (a) keep the policy's action unless F at the real latent rates MPPI's first action higher
+                a_pol = self.pi(pi_params, h0[None], z_task[None], None, 0.0)[0]
+                cand  = jnp.stack([action, a_pol])                                  # (2, A)
+                F1, F2 = self.F(f_params, jnp.tile(h0, (2, 1)), cand, jnp.tile(z_task, (2, 1)))
+                qv = jnp.minimum(self.score(F1, jnp.tile(z_task, (2, 1))), self.score(F2, jnp.tile(z_task, (2, 1))))[:, 0]
+                action = jnp.where(qv[1] > qv[0], a_pol, action)
+            return action, mean, spread                                             # eval mode: no exploration noise
 
         @partial(jax.jit, static_argnames=("self",))
         def plan_batch(self, ts, obs, zs, ws, prev_mean, use_prev, key):
@@ -1184,7 +1203,10 @@ if __name__ == '__main__':
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
     if 'fcons_coef' in kwargs:
         tdmpc_config = dataclasses.replace(tdmpc_config, fcons_coef=float(kwargs['fcons_coef']))
-    for name in ('fcons_model_grad', 'mppi_terminal_only', 'mppi_norm'):
+    for name in ('mixture_coef', 'mppi_init_std'):
+        if name in kwargs:
+            tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
+    for name in ('fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: str(kwargs[name]).lower() in ('1', 'true')})
     for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'hidden_dim', 'feature_dim'):
