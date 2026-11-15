@@ -95,3 +95,8 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - (b) `mppi_init_policy=1`: MPPI's initial mean is the policy's deterministic 5-step trajectory through the model (instead of the shifted previous plan), with `mppi_init_std` (default 2.0, tried 0.5).
 - (c) `mixture_coef` as a flag (default 0.05; tried 0.25 / 0.5).
 - Tested eval-only on the best-config checkpoints of the 3 envs (walker z200 s1–3, cheetah z50 s1–3, quadruped z50 s1).
+
+## 2026-11-15 (evening): the root check becomes the planner of record (user: "go ahead")
+- Eval-only, 7 checkpoints: with `mppi_root_check=1`, MPPI ≥ policy on all of them (walker z200 615 vs 538; cheetah z50 406 vs 374; quadruped z50 679 vs 671). Without it, MPPI fell below the policy on cheetah seed 3 and on quadruped.
+- The main-table and figure evals of fbwm are redone with `mppi_root_check=1` (label sweeps on the z50 checkpoints, quadruped included). New quadruped trainings use it too.
+- Quadruped search, seed 1: consistency_coef 2 → 661 / 653 (best); being verified with seeds 2–3. FB walker is redone at 500k updates (3 seeds: 600 / 503 / 598), replacing the 1M checkpoints in the table and figure.
