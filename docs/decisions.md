@@ -108,3 +108,7 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - Quadruped gphi z50 + lstsq with consistency_coef 2, 3 seeds: MPPI / policy 661 / 653, 672 / 649, 648 / 609 (mean 660 / 637), against 587 / 599 with consistency 5. MPPI > policy on all 3 seeds.
 - Main table with root-check MPPI (z50, 3 seeds), MPPI − policy: walker +48, cheetah +48, quadruped −11 (seed 2: 468 vs 540). The root check guarantees MPPI ≥ policy only as judged by F at the real state, not in return.
 - Next (user): consistency 2 on walker z200 and cheetah z50 (seed 1), to see if one setting fits every env; FB quadruped label sweep.
+
+## 2026-11-15 (night): the paper's configuration (proposed for the first draft; user wants the main table and figure tonight)
+- One fbwm configuration for every environment: gphi, z_dim 50, consistency_coef 2, bcons_coef 2, f_encoder_grad 1, lstsq per-step reward, Cov(B) from the dataset, root-check MPPI, 500k updates. Quadruped already has 3 seeds (660 / 637); cheetah seed 1 (430 / 329) plus seeds 2–3 queued; walker z50 consistency 2 seeds 1–3 queued.
+- Walker z_dim 200 (651 / 523) goes to the ablation table, not the main one.
