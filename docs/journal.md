@@ -86,3 +86,8 @@ Dated session notes, newest last.
   - Main table with root-check MPPI (z50, 3 seeds): walker 622 / 574, cheetah 403 / 355, quadruped 587 / 599 (seed 2: 468 / 540).
   - FB quadruped from the label sweeps: 583 (3 seeds).
 - **End of session (2026-11-15, 23:30):** the main table and label-budget figure are final in the tracker (paper config: gphi z50, consistency 5, lstsq, dataset Cov, root check; 3 seeds everywhere). Consistency 2 was tried as the paper config and rejected (worse on walker and cheetah). The handoff for the paper draft is in research_plan.md ("Paper status and handoff"). Anything still on the cluster is eval-only and not needed for the table. The systemd queue timer stays active; the tracker loop isn't running.
+
+## 2026-11-15 (late): first paper draft
+- `docs/paper_draft.md`: abstract, intro, background, method (shared latent, L_B grounding, lstsq per-step reward with the projection argument, root check), experiments (Table 1 at N = 10k, label-budget table on walker + cheetah), related work, limitations, appendix.
+- A first-reader agent reviewed it. The math checked out. Fixed: the abstract's walker claim (the full-dataset baseline wins at every N, not only small N), scope of the label sweep (walker + cheetah), "on par" softened, undefined terms, the z-rescaling caveat, the noise explanation for w, the fbwm-policy row in Table 2.
+- Open TODOs in the draft: L_B-off and separate-latent ablations in the paper config, a model-free argmax-F baseline, paired per-seed CIs, wall-clock per episode, quadruped label sweep, distance of Σ from I, FB baseline details.
