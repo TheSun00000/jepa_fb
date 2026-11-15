@@ -10,6 +10,7 @@ states) is solved by MPPI planning in latent space, with no training. Plan and c
 - `docs/decisions.md`: decisions and why. Add an entry whenever one is made.
 - `docs/journal.md`: dated session notes. Add one at the end of each work session.
 - `docs/experiments.md`: how runs are named, logged and reported.
+- `docs/writing_checklist.md`: words, sentence patterns and formatting that make text read as machine-written. Run its checks on every report, paper section, journal entry and tracker note before handing it over.
 - Tracker ("fb_jepa Console"): https://claude.ai/artifact/3UineFBuRZiwE4gzMLRkhn . Source: `tracker/index.html`. Its data lives in the artifact database; update it with the ArtifactData tool, not by republishing the page.
 - `tmp.md` is an older write-up (2026-09-30) of the B = phi design; outdated.
 
