@@ -20,6 +20,7 @@ ENVS = ['walker', 'cheetah', 'quadruped']   # antmaze left out for now (user, 20
 TASKS = {'walker': ['stand', 'walk', 'vel8', 'run', 'flip'], 'cheetah': ['vel10Back', 'vel2Back', 'vel2', 'vel10', 'flip'],
          'quadruped': ['stand', 'walk', 'run', 'jump']}
 NS = [100, 300, 1000, 3000, 10000]
+PAPER_CONS = '2'   # the paper configuration (2026-11-15): gphi, z_dim 50, consistency_coef 2, lstsq, dataset Cov, root-check MPPI
 T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571}
 
 
@@ -119,6 +120,7 @@ for folder, kw, ev in runs('2026-11-1[5-9]_*'):
         old_ckpt = any(t in kw['eval_ckpt'] for t in ('2026-11-13', '2026-11-14'))   # 1M-update walker checkpoints
         LATE['fb_old' if old_ckpt else 'fb'].append(('fb', env, kw['seed'], n, f(r['mean_over_tasks']), folder))
     elif (kw.get('variant') == 'gphi' and kw.get('mppi_reward') == 'lstsq' and kw.get('z_cov') == 'dataset' and 'z_dim' not in kw
+          and str(kw.get('consistency_coef')) == PAPER_CONS and 'FBWMBTD' not in folder
           and not any(k in kw for k in ('horizon', 'mppi_init_policy', 'mixture_coef', 'mppi_terminal_only', 'mppi_norm'))):
         tier = 'root' if str(kw.get('mppi_root_check')) in ('1', 'True', 'true') else 'noroot'
         LATE[tier].append(('fbwm', env, kw['seed'], n, f(r['mean_over_tasks']), folder))
@@ -140,7 +142,9 @@ for folder, kw, ev in runs('2026-11-15_*'):
     fin, seed = fin[-1], kw.get('seed', 1)
     if '_FB-' in folder and ('fb', env, int(seed), 10000) not in S:
         put('fb', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final (no z sweep yet)')
-    if 'FBWM-gphi' in folder and kw.get('mppi_reward') == 'lstsq' and not kw.get('fcons_coef') and ('fbwm', env, int(seed), 10000) not in S:
+    if ('FBWM-gphi' in folder and kw.get('mppi_reward') == 'lstsq' and not kw.get('fcons_coef') and str(kw.get('consistency_coef')) == PAPER_CONS
+            and not any(k in kw for k in ('hidden_dim', 'mix_ratio', 'discount', 'batch_size', 'lr', 'tau', 'q_loss_coef', 'b_ortho_coef'))
+            and ('fbwm', env, int(seed), 10000) not in S):
         put('fbwm', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final' + ('' if str(kw.get('mppi_root_check')) in ('1', 'True') else ', no root check') + ('' if kw.get('z_cov') == 'dataset' else ', Cov(B) from the labels'))
         put('fbwm_policy', env, seed, 10000, f(fin['policy_mean_over_tasks']), folder, 'training-run final')
 
@@ -159,7 +163,7 @@ ROWS = [
 ]
 table = {'title': 'Main results, N = 10k labelled states',
          'protocol': ('Mean over the environment\'s tasks of the final evaluation (20 episodes for zero-shot methods, 10 for the toplines '
-                      'and adapted baselines), then mean ± 95% CI over seeds (n = seeds). fbwm: gphi, z_dim 50, MPPI with the lstsq '
+                      'and adapted baselines), then mean ± 95% CI over seeds (n = seeds). fbwm: gphi, z_dim 50, consistency 2, MPPI with the lstsq '
                       'per-step reward, Cov(B) from 100k dataset states and the root check (never below the policy by F at the real state). 500k updates unless noted.'),
          'envs': ENVS, 'groups': []}
 for gname, items in ROWS:
