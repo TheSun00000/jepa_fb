@@ -83,3 +83,9 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - Hyperparameter fixes, cheetah z200, seed 1: q_loss_coef 0.0025 (0.01 × 50/200), tau 0.005 (new `tau=` flag), b_ortho_coef 4; plus the running batch 2048 and lr 5e-5. Cheetah z200 jobs first. Whatever stabilises cheetah gets confirmed on walker and with 3 seeds.
 - Possible principled follow-up (a method change, needs the user's yes and a reviewer): an FB loss invariant to d.
 - User: no MPPI distillation into the actor.
+
+## 2026-11-15: BTD task vectors (user's design, method change requested by the user)
+- `fbwm_btd.py` is a copy of fbwm.py. It trains on a pool of 100k task vectors z = √d · normalize(mean of B over a random dataset subtrajectory of btd_len steps), the FB task vector of "visit this segment", recomputed every 10k updates from the target B. `btd_ratio` is the fraction of the batch drawn from the pool (default 1).
+- Hypothesis: at z_dim 200, uniform z are almost orthogonal to real task vectors, so the actor and F waste capacity on them; that would explain why the policy collapses on cheetah z200 while the reward basis improves (corr_lstsq 0.82).
+- Test (user: cheetah z200 only): btd_len 50 and 100. Also mix_ratio 0.8 / 1.0 and hidden_dim 2048 in fbwm.py (hyperparameters; `hidden_dim`/`feature_dim` are now flags).
+- The hyperparameter fixes (batch 2048, lr 5e-5, q_loss_coef 0.0025, tau 0.005, b_ortho 4) didn't stabilise cheetah z200: final MPPI 141–270, policy 35–119. The FB off-diagonal term levels off at about 950 at z200 (about 195 at z50), so it scales with d rather than diverging. Discount 0.98/0.99 hurt on both envs.
