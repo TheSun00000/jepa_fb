@@ -444,6 +444,11 @@ if __name__ == '__main__':
     MPPI_REWARD = str(kwargs['mppi_reward']) if 'mppi_reward' in kwargs else 'mean'
     assert MPPI_REWARD in ('mean', 'lstsq'), 'mppi_reward=mean|lstsq'
     Z_RIDGE = float(kwargs['z_ridge']) if 'z_ridge' in kwargs else 1e-2   # relative to the mean eigenvalue of E[B B^T]
+    # E[B B^T] of the lstsq weights: labeled = on the N labelled states (as before); dataset = on Z_COV_STATES unlabelled dataset
+    # states (it involves no reward, so labels are not needed; only E[B R] uses the N labels)
+    Z_COV = str(kwargs['z_cov']) if 'z_cov' in kwargs else 'labeled'
+    assert Z_COV in ('labeled', 'dataset'), 'z_cov=labeled|dataset'
+    Z_COV_STATES = 100_000
     Z_LABELS = int(kwargs['z_labels']) if 'z_labels' in kwargs else 10_000   # labelled states per inferred z (one fresh draw per episode)
     EVAL_CKPT = kwargs.get('eval_ckpt')   # eval only: load this checkpoint, run one eval (tag 'zlabels'), no training
     print(NUM_TRAJECTORIES, TRAJECTORY_LEN, NUM_TRAJECTORIES * TRAJECTORY_LEN)
@@ -899,14 +904,18 @@ if __name__ == '__main__':
             return z, corr
 
         @partial(jax.jit, static_argnames=("self",))
-        def infer_zw(self, encoder_params, b_params, obs, reward, ridge):
+        def infer_zw(self, encoder_params, b_params, obs, reward, ridge, cov_obs=None):
             """(z, w, corr_lstsq). z = c E[B R] on the sphere (as infer_z); w = c (E[B B^T] + lam I)^-1 E[B R], same c.
             corr_lstsq: corr(R, centred least-squares fit of R on B) = how well span(B) (+ a constant) represents R."""
             B_  = self.backward(encoder_params, b_params, obs)
             d   = B_.shape[-1]
             b_r = (reward[:, None] * B_).mean(axis=0)
             c   = math.sqrt(self.cfg.z_dim) / jnp.maximum(jnp.linalg.norm(b_r), 1e-8)
-            cov = B_.T @ B_ / B_.shape[0]
+            if cov_obs is None:
+                cov = B_.T @ B_ / B_.shape[0]
+            else:                                                       # unlabelled states: E_rho[B B^T] needs no reward
+                B_u = self.backward(encoder_params, b_params, cov_obs)
+                cov = B_u.T @ B_u / B_u.shape[0]
             lam = ridge * jnp.trace(cov) / d
             w   = c * jnp.linalg.solve(cov + lam * jnp.eye(d), b_r)
             Bc, Rc = B_ - B_.mean(0), reward - reward.mean()
@@ -1294,13 +1303,14 @@ if __name__ == '__main__':
             ids = list(range(start, min(start + EVAL_CHUNK, N_BENCH)))
 
             zs, ws, cs = [], [], []
+            cov_obs = replay_buffer.sample(next_eval_key(), Z_COV_STATES)[0] if Z_COV == 'dataset' else None
             for b in ids:
                 reward_fn, _, param = benchmarks[b]
                 for _ in range(num_evals):
                     eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
                     r_lab = reward_fn(eval_aux, param)
                     z, corr = agent.infer_z(encoder_params, b_params, eval_obs, r_lab)
-                    _, w, corr_ls = agent.infer_zw(encoder_params, b_params, eval_obs, r_lab, Z_RIDGE)
+                    _, w, corr_ls = agent.infer_zw(encoder_params, b_params, eval_obs, r_lab, Z_RIDGE, cov_obs)
                     zs.append(z); ws.append(w); cs.append(corr); corr_ls_log.setdefault(b, []).append(float(corr_ls))
             zs, ws, cs = jnp.stack(zs), jnp.stack(ws), np.asarray(jnp.stack(cs))
 
