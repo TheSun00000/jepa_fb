@@ -125,14 +125,15 @@ task inference for the cost of an FB head". Not now.
 
 
 ### Paper status and handoff (2026-11-15 night): read this first to write the draft
-- **Configuration of "ours" (fbwm), the same for every env:** `fbwm.py variant=gphi` with z_dim 50, consistency_coef 2, bcons_coef 2, f_encoder_grad 1, `mppi_reward=lstsq z_cov=dataset mppi_root_check=1`, 500k updates.
+- **Configuration of "ours" (fbwm), the same for every env (revised 23:20: consistency 5, not 2):** `fbwm.py variant=gphi` with z_dim 50, consistency_coef 5, bcons_coef 2, f_encoder_grad 1, `mppi_reward=lstsq z_cov=dataset mppi_root_check=1`, 500k updates.
   - lstsq: MPPI's per-step reward is the L2 projection of R onto span(B).
   - root check: execute the policy's action when F at the real latent rates it higher than MPPI's first action.
   - Protocol: z from N = 10k labelled states, final eval with 20 episodes per task, 3 seeds.
 - **Main table and label-budget figure:** the tracker overview (https://claude.ai/artifact/3UineFBuRZiwE4gzMLRkhn), collection `paper` (`main_table`, `label_curve`), built by `python tools/paper_tables.py` from `hpc/logs` (writes `hpc/status/paper_*.json`).
   - Rows: TD-MPC and offline TD3 (per-task toplines), the adaptation baselines (reward-free JEPA world model + TD-MPC heads: full dataset, and labels-only Dyna), FB, fbwm policy, fbwm MPPI.
   - Envs: walker, cheetah, quadruped (antmaze and other zero-shot methods out of scope for now).
-  - Status: baselines 3 seeds everywhere. fbwm paper config: quadruped 3 seeds (MPPI 660 / policy 637); cheetah s1 (430 / 329), s2–3 running; walker s1–3 running. Label sweeps of these checkpoints are queued or running on V100.
+  - **Status: final, every cell 3 seeds, no flags.** fbwm MPPI / policy: walker 622 / 574, cheetah 403 / 355, quadruped 587 / 599; FB 571 / 308 / 583. Figure (mean of walker + cheetah), N = 100 … 10k: fbwm MPPI 323 / 402 / 469 / 493 / 512, FB 293 / 371 / 418 / 430 / 440, adapted full 345 / 409 / 493 / 513 / 507, adapted labels-only 121 / 225 / 258 / 344 / 462; toplines TD-MPC 737, TD3 596.
+  - Consistency 2 (tried as the paper config) is worse on walker (597 / 611; MPPI < policy on all 3 seeds) and cheetah (366 / 319) and better only on quadruped (660 / 637). It belongs in the ablations as per-env tuning.
 - **Story so far, with the evidence in journal and decisions:**
   - fbwm > FB on every env.
   - MPPI > its own policy with the root check: +48 on walker and cheetah at consistency 5. With consistency 2: all 3 quadruped seeds, +23 on average.
@@ -173,3 +174,4 @@ task inference for the cost of an FB head". Not now.
 - 2026-11-14: C4 baseline = reward-free JEPA world model + per-task reward/Q heads (not an fbwm checkpoint). Added the later idea of FB on top of a frozen pretrained world model.
 - 2026-11-15: night results. lstsq planner reward + z_dim 200 give fbwm MPPI 666 on walker (3 seeds, FB 567); M1/M2 not needed; C4 label sweep updated.
 - 2026-11-15 (night): paper configuration fixed (gphi z50, consistency 2, lstsq, dataset Cov, root check); main table and label-budget figure in the tracker; handoff section for the paper draft.
+- 2026-11-15 (23:20): paper config revised to consistency 5 (consistency 2 hurts walker and cheetah); main table and figure final with 3 seeds.

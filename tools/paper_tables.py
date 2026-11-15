@@ -20,7 +20,7 @@ ENVS = ['walker', 'cheetah', 'quadruped']   # antmaze left out for now (user, 20
 TASKS = {'walker': ['stand', 'walk', 'vel8', 'run', 'flip'], 'cheetah': ['vel10Back', 'vel2Back', 'vel2', 'vel10', 'flip'],
          'quadruped': ['stand', 'walk', 'run', 'jump']}
 NS = [100, 300, 1000, 3000, 10000]
-PAPER_CONS = '2'   # the paper configuration (2026-11-15): gphi, z_dim 50, consistency_coef 2, lstsq, dataset Cov, root-check MPPI
+PAPER_CONS = '5'   # the paper configuration (2026-11-15, revised 23:20): gphi, z_dim 50, consistency_coef 5, lstsq, dataset Cov, root-check MPPI
 T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571}
 
 
@@ -163,7 +163,7 @@ ROWS = [
 ]
 table = {'title': 'Main results, N = 10k labelled states',
          'protocol': ('Mean over the environment\'s tasks of the final evaluation (20 episodes for zero-shot methods, 10 for the toplines '
-                      'and adapted baselines), then mean ± 95% CI over seeds (n = seeds). fbwm: gphi, z_dim 50, consistency 2, MPPI with the lstsq '
+                      'and adapted baselines), then mean ± 95% CI over seeds (n = seeds). fbwm: gphi, z_dim 50, consistency 5, MPPI with the lstsq '
                       'per-step reward, Cov(B) from 100k dataset states and the root check (never below the policy by F at the real state). 500k updates unless noted.'),
          'envs': ENVS, 'groups': []}
 for gname, items in ROWS:

@@ -112,3 +112,8 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 ## 2026-11-15 (night): the paper's configuration (proposed for the first draft; user wants the main table and figure tonight)
 - One fbwm configuration for every environment: gphi, z_dim 50, consistency_coef 2, bcons_coef 2, f_encoder_grad 1, lstsq per-step reward, Cov(B) from the dataset, root-check MPPI, 500k updates. Quadruped already has 3 seeds (660 / 637); cheetah seed 1 (430 / 329) plus seeds 2–3 queued; walker z50 consistency 2 seeds 1–3 queued.
 - Walker z_dim 200 (651 / 523) goes to the ablation table, not the main one.
+
+## 2026-11-15 (23:20): paper configuration revised to consistency 5
+- Consistency 2 with 3 seeds per env (MPPI / policy): walker 597 / 611 (MPPI < policy on all 3 seeds, even with the root check), cheetah 366 / 319, quadruped 660 / 637. With consistency 5: 622 / 574, 403 / 355, 587 / 599. Consistency 2 only helps quadruped.
+- The paper's single configuration is therefore gphi, z_dim 50, consistency 5, lstsq, dataset Cov, root-check MPPI (`PAPER_CONS = '5'` in tools/paper_tables.py). Quadruped with consistency 2 goes to the ablations as per-env tuning. The main table and figure are final: 3 seeds in every cell.
+- Runs: consistency 2 `2026-11-15_21-58-0x_FBWM-gphi-{walker,cheetah}*`, `21-59-15_FBWM-gphi-walker`; quadruped consistency 2 `17-30-24_..quadruped___`, `18-54-37`, `18-55-15`.
