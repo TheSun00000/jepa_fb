@@ -91,3 +91,8 @@ Dated session notes, newest last.
 - `docs/paper_draft.md`: abstract, intro, background, method (shared latent, L_B grounding, lstsq per-step reward with the projection argument, root check), experiments (Table 1 at N = 10k, label-budget table on walker + cheetah), related work, limitations, appendix.
 - A first-reader agent reviewed it. The math checked out. Fixed: the abstract's walker claim (the full-dataset baseline wins at every N, not only small N), scope of the label sweep (walker + cheetah), "on par" softened, undefined terms, the z-rescaling caveat, the noise explanation for w, the fbwm-policy row in Table 2.
 - Open TODOs in the draft: L_B-off and separate-latent ablations in the paper config, a model-free argmax-F baseline, paired per-seed CIs, wall-clock per episode, quadruped label sweep, distance of Σ from I, FB baseline details.
+
+## 2026-11-16: paper draft v2-v4
+- v2: rewritten against `docs/writing_checklist.md` (branch writing-checklist). v3 and v4: after two first-reader rounds, each by a fresh agent.
+- Fixed: the z-rescaling argument (z is an input to F and pi; cz is the task vector of c r), the L_B bound (vs the target B, mean-square, dataset actions, factor ||w||), FB optimality (exact vs rank d, z_r only sees the projection of r), claims tied to the CIs, the planning gain not yet separated from action selection by F, walker small-N result where FB beats fbwm, naming (fbwm-MPPI / fbwm-actor).
+- Still TODO in the draft: CIs for Table 2, the model-free best-of-K control, L_B-off and separate-latent ablations, FB baseline details, the quadruped label sweep.
