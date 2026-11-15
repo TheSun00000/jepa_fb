@@ -72,3 +72,8 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - The lstsq planner reward helps on walker (+52 at z_dim 50 over 3 seeds; much more at z_dim 200) and **not on cheetah** (paired: 501 vs 501). It's not a general improvement yet.
 - z_dim above 50 breaks FB training on cheetah (FB 300 → 188 at z100 → 97 at z200), so the safe default is z_dim 50.
 - At z_dim 50, Cov(B) from the whole dataset (computed once, task-independent, as the user suggested) matches the in-sample estimate. Candidate default: `z_cov=dataset` at z_dim 50; not changed yet, the user decides.
+
+## 2026-11-15: improvement runs, hyperparameters of the agreed method (user: "queue items 1 and 2")
+- Item 1, a stable larger B: z_dim 200 with batch 2048, or with lr 5e-5. At batch 1024, z200 made FB training collapse on cheetah, but gave the best walker result.
+- Item 2, a longer horizon: z_dim 50 with discount 0.98 / 0.99 (the default 0.95 is an effective horizon of about 20 steps; TD-MPC uses 0.99).
+- Walker and cheetah, seed 1, lstsq + dataset covariance, 500k updates. Queued ahead of the baseline seeds.
