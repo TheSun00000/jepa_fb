@@ -469,6 +469,11 @@ if __name__ == '__main__':
     # Default: every periodic eval (unchanged). 2026-11-15 protocol: eval_each_steps=25 mppi_eval_each=100.
     MPPI_EVAL_EACH = int(kwargs['mppi_eval_each']) if 'mppi_eval_each' in kwargs else EVAL_EACH_STEPS
     DIAG_F = str(kwargs.get('diag_f', '0')).lower() in ('1', 'true')   # eval_ckpt diagnostic: F / B on imagined vs real latents
+    # eval_ckpt diagnostic (2026-11-16): long open-loop world-model rollouts vs the real simulator (diag_wm.csv), then exit
+    # without the usual eval. diag_wm_h = rollout length; diag_wm_envs = real episodes of the policy per task.
+    DIAG_WM = str(kwargs.get('diag_wm', '0')).lower() in ('1', 'true')
+    DIAG_WM_H = int(kwargs['diag_wm_h']) if 'diag_wm_h' in kwargs else 100
+    DIAG_WM_ENVS = int(kwargs['diag_wm_envs']) if 'diag_wm_envs' in kwargs else 10
     # Number of benchmark tasks rolled out in parallel during eval (each one needs NUM_EVALS env instances)
     EVAL_CHUNK = int(kwargs['eval_chunk']) if 'eval_chunk' in kwargs else N_BENCH
 
@@ -1457,6 +1462,155 @@ if __name__ == '__main__':
                                      'r_corr': float(np.corrcoef(rr, ri)[0, 1]), 'f_real_mean': float(qr.mean()),
                                      'f_imag_mean': float(qi.mean())})
             print('wrote', f"{LOGS_FOLDER}/diag_f.csv")
+        if DIAG_WM:
+            # Open-loop accuracy of the world model far past its training horizon, against the real simulator. Two sources:
+            #   'dataset': random dataset sub-trajectories with the dataset actions (latent metrics are task-independent and
+            #              repeated on each task's rows; the reward metrics are per task);
+            #   'policy' : real env episodes of the deterministic policy pi(.|phi(s), z_task), cut into windows every 25 steps.
+            # From h_hat_0 = phi(s_0), h_hat_{t+1} = f(h_hat_t, a_t) with the real actions; at each t it is compared with phi(s_t):
+            #   lat_cos, lat_nmse : cos(h_hat_t, phi(s_t)) and ||h_hat_t - phi(s_t)||^2 / E||phi(s) - E phi||^2 (1 = as bad as the mean latent)
+            #   copy_nmse         : the same error for the persistence guess h_hat_t = phi(s_0) (the latent does not move)
+            #   b_cos             : cos(g(h_hat_t), B(s_t))
+            #   r_corr_imag/real  : corr over windows of the lstsq planner reward g(.)^T w with the true reward R(s_t), from h_hat_t / phi(s_t)
+            #   r_nrmse           : rmse(g(h_hat_t)^T w - g(phi(s_t))^T w) / std over the dataset of g(phi(s))^T w
+            #   obs_nmse(_real)   : MLP probe phi -> standardised (obs, aux), fitted on dataset latents, decoded from h_hat_t (from phi(s_t):
+            #                       the probe's own floor); mean over obs dims of the squared error (1 = as bad as the dataset mean)
+            #   <aux>_mae(_real)  : the probe's aux outputs (velocity, height, upright, ...), mean absolute error in physical units
+            T = DIAG_WM_H
+            enc, b_par = train_state.params['encoder'], train_state.b_params
+            AUX_DIM = replay_buffer.aux.shape[-1]
+            aux_names = {'walker': ['xvel', 'upright', 'height', 'angmom'], 'cheetah': ['xvel', 'angmom'],
+                         'quadruped': ['vx', 'vy', 'vz', 'upright', 'com_h']}.get(ENV_NAME, [f'aux{i}' for i in range(AUX_DIM)])
+            assert len(aux_names) == AUX_DIM, (aux_names, AUX_DIM)
+
+            # dataset statistics: latent spread, probe target scaling, per-task scale of the planner reward
+            s_obs, _, _, s_aux = replay_buffer.sample(next_eval_key(), 100_000)
+            h_s = agent.encode(enc, s_obs)
+            lat_var = float(jnp.mean(jnp.sum((h_s - h_s.mean(0)) ** 2, -1)))
+            y_s = jnp.concatenate([s_obs, s_aux], -1)
+            y_mu, y_sd = y_s.mean(0), y_s.std(0) + 1e-6
+            Bs = agent.b_from_latent(b_par, h_s)
+
+            # MLP probe phi(s) -> (obs, aux), 20k Adam steps on fresh dataset batches
+            probe = MLP(hidden=(256, 256), out_dim=STATE_DIM + AUX_DIM)
+            popt = optax.adam(1e-3)
+
+            @jax.jit
+            def train_probe(p, o, keys, rb):
+                def step(carry, key):
+                    p, o = carry
+                    ob, _, _, ax = rb.sample(key, 1024)
+                    h, tgt = agent.encode(enc, ob), (jnp.concatenate([ob, ax], -1) - y_mu) / y_sd
+                    loss, g = jax.value_and_grad(lambda p: jnp.mean((probe.apply({'params': p}, h) - tgt) ** 2))(p)
+                    up, o = popt.update(g, o, p)
+                    return (optax.apply_updates(p, up), o), loss
+                return jax.lax.scan(step, (p, o), keys)
+
+            pp = probe.init(next_eval_key(), jnp.zeros((1, agent.latent_dim)))['params']
+            (pp, _), probe_losses = train_probe(pp, popt.init(pp), jax.random.split(next_eval_key(), 20_000), replay_buffer)
+            probe_loss = float(probe_losses[-1000:].mean())
+            print('probe loss (standardised MSE, last 1k steps):', probe_loss)
+
+            @jax.jit
+            def wm_rollout(h0, acts):                                   # (N,L), (T,N,A) -> h_hat_1..T (T,N,L)
+                def step(h, a):
+                    h = agent.next(train_state.params, h, a)
+                    return h, h
+                return jax.lax.scan(step, h0, acts)[1]
+
+            # one (z, w) per task, as in the eval (N = Z_LABELS labelled states, Cov(B) per z_cov)
+            cov_obs = replay_buffer.sample(next_eval_key(), Z_COV_STATES)[0] if Z_COV == 'dataset' else None
+            task_zw = []
+            for reward_fn, label, param in benchmarks:
+                lab_obs, _, _, lab_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
+                r_lab = reward_fn(lab_aux, param)
+                z_t, _ = agent.infer_z(enc, b_par, lab_obs, r_lab)
+                _, w_t, _ = agent.infer_zw(enc, b_par, lab_obs, r_lab, Z_RIDGE, cov_obs)
+                w_t = w_t if MPPI_REWARD == 'lstsq' else z_t
+                task_zw.append((z_t, w_t, float(jnp.std(Bs @ w_t))))
+
+            fields = (['source', 'task', 't', 'n', 'lat_cos', 'lat_nmse', 'copy_nmse', 'b_cos', 'r_corr_imag', 'r_corr_real', 'r_nrmse',
+                       'obs_nmse', 'obs_nmse_real'] + [f'{a}_mae{s}' for a in aux_names for s in ('', '_real')]
+                      + ['ep_return', 'probe_loss', 'horizon_train'])
+            wm_logger = CSVLogger(f"{LOGS_FOLDER}/diag_wm.csv", fields)
+
+            def corr_t(x, y):                                           # (T,N), (T,N) -> (T,) corr over N at each t
+                xc, yc = x - x.mean(1, keepdims=True), y - y.mean(1, keepdims=True)
+                return (xc * yc).mean(1) / (xc.std(1) * yc.std(1) + 1e-8)
+
+            def cos_t(x, y):
+                return (jnp.sum(x * y, -1) / (jnp.linalg.norm(x, axis=-1) * jnp.linalg.norm(y, axis=-1) + 1e-8)).mean(1)
+
+            def wm_metrics(source, obs_seq, act_seq, aux_seq, task_ids, ep_returns=None):
+                """obs_seq (T+1,N,D), act_seq (T,N,A), aux_seq (T+1,N,X): one block of rows per task in task_ids."""
+                obs_seq, act_seq, aux_seq = (jnp.asarray(x, dtype=jnp.float32) for x in (obs_seq, act_seq, aux_seq))
+                h_real = agent.encode(enc, obs_seq)
+                h_im, h_re = wm_rollout(h_real[0], act_seq), h_real[1:]
+                lat_cos = cos_t(h_im, h_re)
+                lat_nmse = jnp.mean(jnp.sum((h_im - h_re) ** 2, -1), 1) / lat_var
+                copy_nmse = jnp.mean(jnp.sum((h_real[:1] - h_re) ** 2, -1), 1) / lat_var
+                B_im, B_re = agent.b_from_latent(b_par, h_im), agent.b_from_latent(b_par, h_re)
+                b_cos = cos_t(B_im, B_re)
+                y_true = (jnp.concatenate([obs_seq[1:], aux_seq[1:]], -1) - y_mu) / y_sd
+                y_im, y_re = probe.apply({'params': pp}, h_im), probe.apply({'params': pp}, h_re)
+                obs_nmse = jnp.mean((y_im - y_true)[..., :STATE_DIM] ** 2, (1, 2))
+                obs_nmse_real = jnp.mean((y_re - y_true)[..., :STATE_DIM] ** 2, (1, 2))
+                aux_mae = jnp.mean(jnp.abs(y_im - y_true)[..., STATE_DIM:], 1) * y_sd[STATE_DIM:]       # (T,X), physical units
+                aux_mae_real = jnp.mean(jnp.abs(y_re - y_true)[..., STATE_DIM:], 1) * y_sd[STATE_DIM:]
+                base = {k: np.asarray(v) for k, v in dict(lat_cos=lat_cos, lat_nmse=lat_nmse, copy_nmse=copy_nmse, b_cos=b_cos,
+                                                          obs_nmse=obs_nmse, obs_nmse_real=obs_nmse_real).items()}
+                aux_mae, aux_mae_real = np.asarray(aux_mae), np.asarray(aux_mae_real)
+                for b_i in task_ids:
+                    reward_fn, label, param = benchmarks[b_i]
+                    _, w_t, r_sd = task_zw[b_i]
+                    r_true = reward_fn(aux_seq[1:], param)
+                    r_im, r_re = B_im @ w_t, B_re @ w_t
+                    r_ci, r_cr = np.asarray(corr_t(r_im, r_true)), np.asarray(corr_t(r_re, r_true))
+                    r_nrmse = np.asarray(jnp.sqrt(jnp.mean((r_im - r_re) ** 2, 1)) / (r_sd + 1e-8))
+                    for t in range(T):
+                        row = {'source': source, 'task': label, 't': t + 1, 'n': int(obs_seq.shape[1]),
+                               **{k: float(v[t]) for k, v in base.items()},
+                               'r_corr_imag': float(r_ci[t]), 'r_corr_real': float(r_cr[t]), 'r_nrmse': float(r_nrmse[t]),
+                               'ep_return': '' if ep_returns is None else float(ep_returns[b_i]),
+                               'probe_loss': probe_loss, 'horizon_train': tdmpc_config.horizon}
+                        for j, a in enumerate(aux_names):
+                            row[f'{a}_mae'], row[f'{a}_mae_real'] = float(aux_mae[t, j]), float(aux_mae_real[t, j])
+                        wm_logger.log(row)
+
+            # (1) dataset sub-trajectories of length T (dataset actions)
+            n_seq, tl = 4096, TRAJECTORY_LEN
+            rng = np.random.default_rng(SEED + 20_000)
+            starts = rng.integers(0, NUM_TRAJECTORIES, n_seq) * tl + rng.integers(0, tl - T, n_seq)
+            idx = starts[None, :] + np.arange(T + 1)[:, None]
+            wm_metrics('dataset', replay_buffer.obs[idx], replay_buffer.actions[idx[:-1]], replay_buffer.aux[idx],
+                       range(N_BENCH))
+            print('diag_wm: dataset done')
+
+            # (2) real episodes of the policy, DIAG_WM_ENVS per task, all tasks in lock-step
+            zs = jnp.concatenate([jnp.broadcast_to(task_zw[b][0], (DIAG_WM_ENVS, task_zw[b][0].shape[0])) for b in range(N_BENCH)])
+            n = zs.shape[0]
+            while len(eval_envs) < n:
+                eval_envs.append(make_eval_env())
+            envs = eval_envs[:n]
+            states = [env_reset(e) for e in envs]
+            obs_l, act_l, aux_l = [], [], []
+            for step in tqdm(range(EVAL_STEPS), leave=False):
+                obs = np.stack(states).astype(np.float32)
+                aux_l.append(np.stack([env_aux(e, s) for e, s in zip(envs, states)]))
+                actions = np.asarray(agent.act_policy_batch(train_state, jnp.asarray(obs), zs))
+                obs_l.append(obs); act_l.append(actions)
+                states = [env_step(e, a) for e, a in zip(envs, actions)]
+            obs_tr, act_tr, aux_tr = np.stack(obs_l), np.stack(act_l), np.stack(aux_l)           # (EVAL_STEPS, n, .)
+            win = np.arange(0, EVAL_STEPS - T, 25)
+            for b_i, (reward_fn, label, param) in enumerate(benchmarks):
+                sl = slice(b_i * DIAG_WM_ENVS, (b_i + 1) * DIAG_WM_ENVS)
+                ret = np.asarray(reward_fn(jnp.asarray(aux_tr[:, sl], dtype=jnp.float32), param)).sum(0).mean()
+                print(f'diag_wm: policy {label}: return {ret:.1f}')
+                cut = lambda x, L: np.concatenate([x[s:s + L, sl] for s in win], axis=1)          # (L, windows * envs, .)
+                wm_metrics('policy', cut(obs_tr, T + 1), cut(act_tr, T), cut(aux_tr, T + 1), [b_i], {b_i: ret})
+            print('wrote', f"{LOGS_FOLDER}/diag_wm.csv")
+            mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
+            sys.exit(0)
         evaluate(train_state, 0, False, NUM_EVALS_FINAL, 'zlabels')
         mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
         sys.exit(0)
