@@ -437,6 +437,13 @@ if __name__ == '__main__':
 
     N_BENCH   = len(benchmarks)
     NUM_EVALS = 5
+    # MPPI per-step reward (2026-11-15, approved by an independent reviewer agent): mean = g(h)^T z (as before);
+    # lstsq = g(h)^T w with w = c (E[B B^T] + lam I)^-1 E[B R], the L2(rho) projection of R onto span(B), and c the factor that
+    # puts z = c E[B R] on the sphere. F^T z is exactly the Q of that projected reward, so the per-step rewards and the
+    # terminal value describe the same reward. The policy and the terminal value keep z = E[B R] (exact in FB).
+    MPPI_REWARD = str(kwargs['mppi_reward']) if 'mppi_reward' in kwargs else 'mean'
+    assert MPPI_REWARD in ('mean', 'lstsq'), 'mppi_reward=mean|lstsq'
+    Z_RIDGE = float(kwargs['z_ridge']) if 'z_ridge' in kwargs else 1e-2   # relative to the mean eigenvalue of E[B B^T]
     Z_LABELS = int(kwargs['z_labels']) if 'z_labels' in kwargs else 10_000   # labelled states per inferred z (one fresh draw per episode)
     EVAL_CKPT = kwargs.get('eval_ckpt')   # eval only: load this checkpoint, run one eval (tag 'zlabels'), no training
     print(NUM_TRAJECTORIES, TRAJECTORY_LEN, NUM_TRAJECTORIES * TRAJECTORY_LEN)
@@ -476,7 +483,8 @@ if __name__ == '__main__':
         filepath=f"{LOGS_FOLDER}/eval_log.csv",
         fieldnames=["step"] + eval_columns('') + [f"{label}_corr" for _, label, _ in benchmarks]
                    + (eval_columns('policy_') if EVAL_MODE == 'both' else []) + ["num_evals", "tag", "time"]
-                   + [f"{m}_time" for m in EVAL_MODES] + ["z_labels", "mppi_elite_spread"],   # wall-clock seconds of each eval mode (all tasks, num_evals episodes; first eval includes jit)
+                   + [f"{m}_time" for m in EVAL_MODES] + ["z_labels", "mppi_elite_spread"]
+                   + [f"{label}_corr_lstsq" for _, label, _ in benchmarks],   # wall-clock seconds of each eval mode (all tasks, num_evals episodes; first eval includes jit)
     )
 
     # ── Replay buffer (sequences of length HORIZON) ───────────────────────────────
@@ -891,6 +899,24 @@ if __name__ == '__main__':
             return z, corr
 
         @partial(jax.jit, static_argnames=("self",))
+        def infer_zw(self, encoder_params, b_params, obs, reward, ridge):
+            """(z, w, corr_lstsq). z = c E[B R] on the sphere (as infer_z); w = c (E[B B^T] + lam I)^-1 E[B R], same c.
+            corr_lstsq: corr(R, centred least-squares fit of R on B) = how well span(B) (+ a constant) represents R."""
+            B_  = self.backward(encoder_params, b_params, obs)
+            d   = B_.shape[-1]
+            b_r = (reward[:, None] * B_).mean(axis=0)
+            c   = math.sqrt(self.cfg.z_dim) / jnp.maximum(jnp.linalg.norm(b_r), 1e-8)
+            cov = B_.T @ B_ / B_.shape[0]
+            lam = ridge * jnp.trace(cov) / d
+            w   = c * jnp.linalg.solve(cov + lam * jnp.eye(d), b_r)
+            Bc, Rc = B_ - B_.mean(0), reward - reward.mean()
+            covc = Bc.T @ Bc / B_.shape[0]
+            wc  = jnp.linalg.solve(covc + lam * jnp.eye(d), (Rc[:, None] * Bc).mean(0))
+            pred = Bc @ wc
+            corr = (pred * Rc).mean() / (pred.std() * Rc.std() + 1e-8)
+            return c * b_r, w, corr
+
+        @partial(jax.jit, static_argnames=("self",))
         def reconstruct_reward(self, encoder_params, b_params, obs, z):
             """Linear reward reconstruction B(s)^T z / d (used for the plots)."""
             return self.score(self.backward(encoder_params, b_params, obs), z)[..., 0]
@@ -1069,7 +1095,7 @@ if __name__ == '__main__':
 
         # ── MPPI planning in the latent space of phi, for a given task vector z ──────────
 
-        def _estimate_value(self, params, b_params, bh_params, f_params, pi_params, h, z, actions, key):
+        def _estimate_value(self, params, b_params, bh_params, f_params, pi_params, h, z, actions, key, w=None):
             """Sum_t gamma^t r(h_{t+1})^T z / d over the horizon, r = B_hat (sepB) or g (gphi) on the imagined latent, plus the
             bootstrapped min_i F_i(h_H, pi(h_H, z), z)^T z / d at the end. h (S,L), z (S,D), actions (H,S,A)."""
             c = self.cfg
@@ -1077,14 +1103,14 @@ if __name__ == '__main__':
             for t in range(c.horizon):
                 h = self.next(params, h, actions[t])
                 if not c.mppi_terminal_only:
-                    G = G + discount * self.score(self.reward_feature(b_params, bh_params, h), z)     # sepB B_hat(h), gphi g(h)
+                    G = G + discount * self.score(self.reward_feature(b_params, bh_params, h), z if w is None else w)   # sepB B_hat(h), gphi g(h)
                 discount = discount * c.discount
             a = self.pi(pi_params, h, z, key, c.min_std)
             F1, F2 = self.F(f_params, h, a, z)
             q = jnp.minimum(self.score(F1, z), self.score(F2, z))
             return (G + discount * q)[..., 0]
 
-        def _plan_single(self, ts, obs, z_task, prev_mean, use_prev, key):
+        def _plan_single(self, ts, obs, z_task, w_task, prev_mean, use_prev, key):
             """MPPI for one env and one task vector. obs (obs_dim,), z_task (D,), prev_mean (H, A)."""
             c = self.cfg
             H, A = c.horizon, self.action_dim
@@ -1104,6 +1130,7 @@ if __name__ == '__main__':
 
             h    = jnp.tile(h0, (c.num_samples + num_pi, 1))
             z    = jnp.tile(z_task, (c.num_samples + num_pi, 1))
+            w    = jnp.tile(w_task, (c.num_samples + num_pi, 1))       # per-step reward weights (= z unless mppi_reward=lstsq)
             mean = jnp.where(use_prev, jnp.concatenate([prev_mean[1:], jnp.zeros((1, A))], axis=0), jnp.zeros((H, A)))
             std  = 2.0 * jnp.ones((H, A))
 
@@ -1113,7 +1140,7 @@ if __name__ == '__main__':
                 sampled = jnp.clip(mean[:, None] + std[:, None] * noise, -1, 1)
                 actions = jnp.concatenate([sampled, pi_actions], axis=1)            # (H, S + num_pi, A)
 
-                value = jnp.nan_to_num(self._estimate_value(params, b_params, bh_params, f_params, pi_params, h, z, actions, k_val))
+                value = jnp.nan_to_num(self._estimate_value(params, b_params, bh_params, f_params, pi_params, h, z, actions, k_val, w))
                 elite_value, elite_idx = jax.lax.top_k(value, c.num_elites)
                 elite_actions = actions[:, elite_idx]                               # (H, E, A)
 
@@ -1130,10 +1157,10 @@ if __name__ == '__main__':
             return elite_actions[0, chosen], mean, spread                           # eval mode: no exploration noise
 
         @partial(jax.jit, static_argnames=("self",))
-        def plan_batch(self, ts, obs, zs, prev_mean, use_prev, key):
-            """MPPI for a batch of envs, env i conditioned on task vector zs[i]. obs (N, obs_dim), zs (N, D)."""
+        def plan_batch(self, ts, obs, zs, ws, prev_mean, use_prev, key):
+            """MPPI for a batch of envs, env i conditioned on task vector zs[i] (per-step reward weights ws[i]). obs (N, obs_dim)."""
             keys = jax.random.split(key, obs.shape[0])
-            return jax.vmap(self._plan_single, in_axes=(None, 0, 0, 0, None, 0))(ts, obs, zs, prev_mean, use_prev, keys)
+            return jax.vmap(self._plan_single, in_axes=(None, 0, 0, 0, 0, None, 0))(ts, obs, zs, ws, prev_mean, use_prev, keys)
 
         @partial(jax.jit, static_argnames=("self",))
         def act_policy_batch(self, ts, obs, zs):
@@ -1185,8 +1212,9 @@ if __name__ == '__main__':
 
     eval_envs = []   # pool of env instances, grown on demand and reused across evals
     mppi_spread_log = []   # std of the final-iteration elite values at every MPPI step (reset at every eval row)
+    corr_ls_log = {}       # task index -> corr of R with its least-squares fit on B (reset at every eval row)
 
-    def rollout_batch(ts, zs, random_key, mode='mppi'):
+    def rollout_batch(ts, zs, random_key, mode='mppi', ws=None):
         """len(zs) envs rolled out in lock-step, env i conditioned on task vector zs[i]. One batched jitted call per step.
         mode='mppi': MPPI planning. mode='policy': the policy alone (deterministic, no planning)."""
         n = zs.shape[0]
@@ -1209,7 +1237,8 @@ if __name__ == '__main__':
                 actions = agent.act_policy_batch(ts, jnp.asarray(obs), zs)
             else:
                 random_key, sub = jax.random.split(random_key)
-                actions, prev_mean, spread = agent.plan_batch(ts, jnp.asarray(obs), zs, prev_mean, jnp.asarray(step > 0), sub)
+                actions, prev_mean, spread = agent.plan_batch(ts, jnp.asarray(obs), zs, zs if ws is None else ws, prev_mean,
+                                                              jnp.asarray(step > 0), sub)
                 elite_spreads.append(float(jnp.mean(spread)))
             states = [env_step(e, a) for e, a in zip(envs, np.asarray(actions))]
 
@@ -1264,16 +1293,19 @@ if __name__ == '__main__':
         for start in range(0, N_BENCH, EVAL_CHUNK):
             ids = list(range(start, min(start + EVAL_CHUNK, N_BENCH)))
 
-            zs, cs = [], []
+            zs, ws, cs = [], [], []
             for b in ids:
                 reward_fn, _, param = benchmarks[b]
                 for _ in range(num_evals):
                     eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
-                    z, corr = agent.infer_z(encoder_params, b_params, eval_obs, reward_fn(eval_aux, param))
-                    zs.append(z); cs.append(corr)
-            zs, cs = jnp.stack(zs), np.asarray(jnp.stack(cs))
+                    r_lab = reward_fn(eval_aux, param)
+                    z, corr = agent.infer_z(encoder_params, b_params, eval_obs, r_lab)
+                    _, w, corr_ls = agent.infer_zw(encoder_params, b_params, eval_obs, r_lab, Z_RIDGE)
+                    zs.append(z); ws.append(w); cs.append(corr); corr_ls_log.setdefault(b, []).append(float(corr_ls))
+            zs, ws, cs = jnp.stack(zs), jnp.stack(ws), np.asarray(jnp.stack(cs))
 
-            obs_traj, aux_traj, phys_traj = rollout_batch(train_state, zs, next_eval_key(), mode)
+            obs_traj, aux_traj, phys_traj = rollout_batch(train_state, zs, next_eval_key(), mode,
+                                                          ws if MPPI_REWARD == 'lstsq' else None)
 
             for j, b in enumerate(ids):
                 reward_fn, label, param = benchmarks[b]
@@ -1325,7 +1357,7 @@ if __name__ == '__main__':
         """Every eval mode on every task; one eval_log row (tag 'eval' = periodic, 'final' = after the last update)."""
         start_time = time.time()
         results, mode_times = {}, {}
-        mppi_spread_log.clear()
+        mppi_spread_log.clear(); corr_ls_log.clear()
         for i, mode in enumerate(modes or EVAL_MODES):
             plot_tag = ('' if i == 0 else f'-{mode}') + ('-final' if tag == 'final' else '')
             t0 = time.time()
@@ -1334,6 +1366,8 @@ if __name__ == '__main__':
 
         eval_row = {'step': num_updates, 'num_evals': num_evals, 'tag': tag, 'time': time.time() - start_time, **mode_times,
                     'z_labels': Z_LABELS, 'mppi_elite_spread': float(np.mean(mppi_spread_log)) if mppi_spread_log else ''}
+        for i, (_, label, _) in enumerate(benchmarks):
+            eval_row[f'{label}_corr_lstsq'] = float(np.mean(corr_ls_log[i])) if corr_ls_log.get(i) else ''
         def fill(prefix, means, stds):
             eval_row[f'{prefix}mean_over_tasks'] = float(means.mean())
             for i, (_, label, _) in enumerate(benchmarks):

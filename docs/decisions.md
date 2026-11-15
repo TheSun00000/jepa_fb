@@ -56,3 +56,9 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - Method changes are allowed only if they are principled and **validated by another agent** first: an independent reviewer subagent gets the proposal, the evidence and the code diff, and must agree before anything is queued.
 - Each proposal, the reviewer's verdict and the runs it produced go into this file and the journal.
 - Unchanged: nothing on the cluster is cancelled or deleted, and CLFB is never touched.
+
+## 2026-11-15 (night): least-squares weights for MPPI's per-step reward (reviewer-approved)
+- **Proposed:** least-squares z inference (`(E[BBᵀ] + λI)⁻¹ E[BR]`) used everywhere.
+- **Reviewer (independent agent): REJECT as written.** In FB, `Fᵀ E_ρ[B R]` is the exact Q of R whatever Cov(B) is, so the policy and the terminal value must keep `z = E[B R]`. A least-squares z would make them optimise a different reward.
+- **Reviewer: APPROVE the split variant.** MPPI's per-step reward uses `g(h)ᵀw` with `w = c (E[BBᵀ] + λI)⁻¹ E[BR]`, where c is the same factor that puts z on the sphere. `Fᵀz` is exactly the Q of the projected reward `Bᵀw`, so the per-step rewards and the terminal value then describe the same reward, which the current code doesn't. λ = 1e-2 · trace(Cov)/d. The policy is unchanged, so the policy-only eval is a sanity check.
+- Implemented as `mppi_reward=lstsq` (default `mean`, unchanged). New diagnostic columns `<task>_corr_lstsq` give the correlation of R with its centred least-squares fit on B, i.e. how well span(B) represents R. The old 0.57 also mixed in Cov(B) ≠ I.
