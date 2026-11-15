@@ -77,3 +77,9 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - Item 1, a stable larger B: z_dim 200 with batch 2048, or with lr 5e-5. At batch 1024, z200 made FB training collapse on cheetah, but gave the best walker result.
 - Item 2, a longer horizon: z_dim 50 with discount 0.98 / 0.99 (the default 0.95 is an effective horizon of about 20 steps; TD-MPC uses 0.99).
 - Walker and cheetah, seed 1, lstsq + dataset covariance, 500k updates. Queued ahead of the baseline seeds.
+
+## 2026-11-15: stabilising large z_dim (user: needs the MPPI > policy claim; no MPPI distillation)
+- Diagnosis from the training logs: FB's off-diagonal TD term and the auxiliary Q-loss scale with z_dim, and at z200 they keep rising throughout training (cheetah: offdiag 317 → 872, q_loss 2050 at the end, against 175 / 368 at z50). ‖F‖ grows too. A TD instability from coefficients tuned at z50.
+- Hyperparameter fixes, cheetah z200, seed 1: q_loss_coef 0.0025 (0.01 × 50/200), tau 0.005 (new `tau=` flag), b_ortho_coef 4; plus the running batch 2048 and lr 5e-5. Cheetah z200 jobs first. Whatever stabilises cheetah gets confirmed on walker and with 3 seeds.
+- Possible principled follow-up (a method change, needs the user's yes and a reviewer): an FB loss invariant to d.
+- User: no MPPI distillation into the actor.

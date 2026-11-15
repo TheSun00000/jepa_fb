@@ -1179,7 +1179,7 @@ if __name__ == '__main__':
 
     tdmpc_config = TDMPCFBConfig(variant=VARIANT, batch_size=BATCH_SIZE, horizon=HORIZON, phi_identity=PHI_IDENTITY)
     for name in ('lr', 'discount', 'consistency_coef', 'bcons_coef', 'ortho_coef', 'b_ortho_coef', 'f_encoder_grad',
-                 'b_encoder_grad', 'q_loss_coef', 'mix_ratio', 'stddev'):
+                 'b_encoder_grad', 'q_loss_coef', 'mix_ratio', 'stddev', 'tau'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
     if 'fcons_coef' in kwargs:
