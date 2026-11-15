@@ -103,3 +103,8 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 
 ## 2026-11-15 (evening): BTD for the actor only (user's proposal)
 - `btd_actor_only=1` in fbwm_btd.py: the FB loss (and its TD-target action) keeps fbwm.py's z distribution (uniform, mix_ratio of B(s)), so F and B are learned for all z. Only the actor loss uses the pool's task vectors (mean of B over 50-step subtrajectories), the z's of real tasks. Test: z200, cheetah and walker, seed 1, root-check MPPI.
+
+## 2026-11-15 (evening): quadruped best config = consistency_coef 2
+- Quadruped gphi z50 + lstsq with consistency_coef 2, 3 seeds: MPPI / policy 661 / 653, 672 / 649, 648 / 609 (mean 660 / 637), against 587 / 599 with consistency 5. MPPI > policy on all 3 seeds.
+- Main table with root-check MPPI (z50, 3 seeds), MPPI − policy: walker +48, cheetah +48, quadruped −11 (seed 2: 468 vs 540). The root check guarantees MPPI ≥ policy only as judged by F at the real state, not in return.
+- Next (user): consistency 2 on walker z200 and cheetah z50 (seed 1), to see if one setting fits every env; FB quadruped label sweep.
