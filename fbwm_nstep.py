@@ -706,7 +706,7 @@ if __name__ == '__main__':
         n, d = X.shape
         return jnp.std(X, axis=0).mean(), jnp.linalg.norm(X.T @ X / n - jnp.eye(d)) / math.sqrt(d), jnp.linalg.norm(X.mean(axis=0))
 
-    def fb_losses(F1, F2, B, z, target_M, next_Q, discount, q_loss_coef, use_q_loss=True, b_extra=None, diag_coef=1.0, q_coef=1.0):
+    def fb_losses(F1, F2, B, z, target_M, next_Q, discount, q_loss_coef, use_q_loss=True, b_extra=None, diag_coef=1.0, q_coef=1.0, b_extra_live=None):
         """Forward-backward losses on a batch of n transitions (s_i, a_i, s'_i), as in the FB script.
         F1, F2: (n, d) forward embeddings F(phi(s_i), a_i, z_i). B: (n, d) backward embeddings B(s'_j) of the next states.
         target_M: (n, n) target successor measure. next_Q: (n,) target Q(s'_i, pi(s'_i, z_i), z_i).
@@ -721,7 +721,8 @@ if __name__ == '__main__':
         fb_diag_extra = jnp.zeros(())
         if b_extra is not None:      # -sum_{j>=2} gamma^{j-1} F_i^T B(s_{i,j}), B a constant
             b_extra = jax.lax.stop_gradient(b_extra)
-            fb_diag_extra = -diag_coef * sum(((F * b_extra).sum(-1)).mean() for F in (F1, F2))
+            b_diag  = b_extra if b_extra_live is None else b_extra_live          # DEBUG bgrad: the diagonal term also trains B(s_j), j>=2
+            fb_diag_extra = -diag_coef * sum(((F * b_diag).sum(-1)).mean() for F in (F1, F2))
 
         q_loss = jnp.zeros(())
         if use_q_loss:   # FB's auxiliary loss: Q = F^T z regressed onto the implicit reward B^T Cov^-1 z + discount * next_Q
@@ -776,6 +777,7 @@ if __name__ == '__main__':
         fb_nstep_diag:       float = 1.0     # DEBUG: coefficient of the extra diagonal term (1 = the k-step loss, 0 = off)
         fb_nstep_q:          float = 1.0     # DEBUG: coefficient of b_extra in the Q-loss implicit reward (1 = n-step, 0 = 1-step reward)
         fb_nstep_tgtb:       bool  = False   # DEBUG (gphi): the extra positives B(s_j), j>=2, come from the EMA target g (and EMA phi for src=data)
+        fb_nstep_bgrad:      bool  = False   # DEBUG (src=data): B(s_j), j>=2, in the extra diagonal term gets its gradient (the true gradient of L_k)
         fb_nstep_src:        str   = 'model' # s_2..s_k: 'model' (pi_z rollout in the world model) | 'data' (dataset states)
         q_loss:              bool  = True    # FB's auxiliary Q-loss
         q_loss_coef:         float = 0.01
@@ -1027,12 +1029,16 @@ if __name__ == '__main__':
                 b_extra = ((c.discount ** jnp.arange(1, K, dtype=jnp.float32))[:, None, None] * B_mid).sum(0)   # (B,D)
                 pol_h_K = tgt_h_K = h_K                                                            # imagined latent of s_K
             gamma_k = c.discount ** K
+            kmask   = 1.0
+            if c.fb_nstep_bgrad:
+                assert c.fb_nstep_src == 'data' and K > 1, 'fb_nstep_bgrad needs fb_nstep_src=data and fb_nstep>1'
             if K > 1 and c.fb_nstep_warmup > 0:      # first fb_nstep_warmup updates: exactly the 1-step loss (selected, not recompiled)
                 use_k   = ts.steps >= c.fb_nstep_warmup
                 b_extra = jnp.where(use_k, b_extra, 0.0)
                 pol_h_K = jnp.where(use_k, pol_h_K, next_h)
                 tgt_h_K = jnp.where(use_k, tgt_h_K, target_h[0])
                 gamma_k = jnp.where(use_k, gamma_k, c.discount)
+                kmask   = use_k.astype(jnp.float32)
             # FB target: target F at the latent of s_K, with the action of the (noisy) policy there
             next_a   = self.pi(ts.pi_params, pol_h_K, z, k_next, c.stddev)
             tF1, tF2 = self.F(ts.target_params['f'], tgt_h_K, next_a, z)                           # (B,D)
@@ -1088,8 +1094,13 @@ if __name__ == '__main__':
                 h0     = self.encode(enc_f, obs[0])
                 F1, F2 = self.F(f_params, h0, action[0], z)                                         # (B,D)
                 B_s    = self.backward(enc_b, b_params, obs[1])                                     # (B,D): B(s'_j)
+                b_live = None
+                if c.fb_nstep_bgrad:    # B on the dataset states s_2..s_K, with gradient (into B and, scaled by b_encoder_grad, phi)
+                    B_j    = self.backward(enc_b, b_params, obs[2:K + 1])                           # (K-1,B,D)
+                    w_j    = (c.discount ** jnp.arange(1, K, dtype=jnp.float32))[:, None, None]
+                    b_live = (w_j * B_j).sum(0) * kmask
                 fb_loss, fb_aux = fb_losses(F1, F2, B_s, z, target_M, next_Q, gamma_k, c.q_loss_coef, c.q_loss,
-                                            b_extra=b_extra, diag_coef=c.fb_nstep_diag, q_coef=c.fb_nstep_q)
+                                            b_extra=b_extra, diag_coef=c.fb_nstep_diag, q_coef=c.fb_nstep_q, b_extra_live=b_live)
                 b_ortho = gram_ortho(B_s)
                 b_std, b_cov_l2, b_mean_norm = feature_stats(B_s)
                 aux = dict(fb_aux, fb_loss=fb_loss, b_ortho_loss=b_ortho, F_norm=jnp.linalg.norm(F1, axis=-1).mean(),
@@ -1280,7 +1291,7 @@ if __name__ == '__main__':
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
     if 'fb_nstep_tgtb' in kwargs:
         assert VARIANT == 'gphi', 'fb_nstep_tgtb is gphi only'
-    for name in ('q_loss', 'fb_nstep_tgtb', 'fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
+    for name in ('q_loss', 'fb_nstep_bgrad', 'fb_nstep_tgtb', 'fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: str(kwargs[name]).lower() in ('1', 'true')})
     for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'hidden_dim', 'feature_dim'):
