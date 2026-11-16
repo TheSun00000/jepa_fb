@@ -1608,6 +1608,39 @@ if __name__ == '__main__':
                 print(f'diag_wm: policy {label}: return {ret:.1f}')
                 cut = lambda x, L: np.concatenate([x[s:s + L, sl] for s in win], axis=1)          # (L, windows * envs, .)
                 wm_metrics('policy', cut(obs_tr, T + 1), cut(act_tr, T), cut(aux_tr, T + 1), [b_i], {b_i: ret})
+            # (3) value check on the same real policy episodes: is F^T z the discounted return that is actually obtained?
+            # Q_t = min_i F_i(phi(s_t), a_t, z) . z  (F^T z is the Q of the projected reward r_proj = B(s)^T w, exactly, w from the lstsq).
+            # G_proj_t = sum_{k>=1} gamma^(k-1) r_proj(s_{t+k}) (K = 100 steps), G_true_t the same with the task's true reward.
+            #   q_corr  = corr(Q, G_proj)  : accuracy of F on the policy's own states (1 = F ranks states correctly)
+            #   q_slope = slope of G_proj on Q: 1 = unbiased, < 1 means F overestimates
+            #   proj_corr = corr(G_proj, G_true): how much of the true return span(B) keeps
+            #   q_corr_true = corr(Q, G_true): what the planner / policy actually sees
+            qlog = CSVLogger(f"{LOGS_FOLDER}/diag_q.csv", ["task", "n", "q_corr", "q_slope", "q_mean", "g_proj_mean", "proj_corr",
+                                                           "q_corr_true", "ep_return"])
+            K, gam, t_max = 100, tdmpc_config.discount, EVAL_STEPS - 100
+            for b_i, (reward_fn, label, param) in enumerate(benchmarks):
+                sl = slice(b_i * DIAG_WM_ENVS, (b_i + 1) * DIAG_WM_ENVS)
+                z_t, w_t, _ = task_zw[b_i]
+                o = jnp.asarray(obs_tr[:, sl], dtype=jnp.float32).reshape(-1, STATE_DIM)
+                a_ = jnp.asarray(act_tr[:, sl], dtype=jnp.float32).reshape(-1, ACTION_DIM)
+                h_ = agent.encode(enc, o)
+                zz = jnp.broadcast_to(z_t, (h_.shape[0], z_t.shape[0]))
+                F1, F2 = agent.F(train_state.f_params, h_, a_, zz)
+                Q = np.asarray(jnp.minimum((F1 * zz).sum(-1), (F2 * zz).sum(-1))).reshape(EVAL_STEPS, -1)
+                r_proj = np.asarray(agent.b_from_latent(b_par, h_) @ w_t).reshape(EVAL_STEPS, -1)
+                r_true = np.asarray(reward_fn(jnp.asarray(aux_tr[:, sl], dtype=jnp.float32), param))
+                def disc(r):
+                    G = np.zeros((t_max, r.shape[1]))
+                    for k in range(1, K + 1):
+                        G += gam ** (k - 1) * r[k:k + t_max]
+                    return G
+                Gp, Gt, Qm = disc(r_proj), disc(r_true), Q[:t_max]
+                cc = lambda x, y: float(np.corrcoef(x.ravel(), y.ravel())[0, 1])
+                slope = float(np.polyfit(Qm.ravel(), Gp.ravel(), 1)[0])
+                qlog.log({'task': label, 'n': int(Qm.size), 'q_corr': cc(Qm, Gp), 'q_slope': slope, 'q_mean': float(Qm.mean()),
+                          'g_proj_mean': float(Gp.mean()), 'proj_corr': cc(Gp, Gt), 'q_corr_true': cc(Qm, Gt),
+                          'ep_return': float(r_true.sum(0).mean())})
+            print('wrote', f"{LOGS_FOLDER}/diag_q.csv")
             print('wrote', f"{LOGS_FOLDER}/diag_wm.csv")
             mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
             sys.exit(0)
