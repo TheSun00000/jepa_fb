@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --output=.slurm_logs/%x_%j.out
+#SBATCH --error=.slurm_logs/%x_%j.err
+#SBATCH --time=0:40:00
+#SBATCH --exclude=jean-zay-iam26
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=24
+#SBATCH --account=vcj@h100
+#SBATCH -C h100
+#SBATCH --qos=qos_gpu_h100-dev
+module purge
+module load arch/h100
+module load pytorch-gpu/py3/2.4.0
+module unload cudnn
+module load cudnn/9.8.0.87-cuda
+conda activate jax_env
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
+
+CMD="python fbwm_nstep.py env_name=walker variant=gphi eval_mode=policy consistency_coef=5 bcons_coef=2 f_encoder_grad=1 eval_each_steps=10 num_evals_final=5 num_outer_steps=30 fb_nstep=3 fb_nstep_src=model fb_nstep_warmup=5000 seed=1 fb_nstep_diag=0.5"
+echo "Running: $CMD"
+mkdir -p models logs
+python fbwm_nstep.py env_name=walker variant=gphi eval_mode=policy consistency_coef=5 bcons_coef=2 f_encoder_grad=1 eval_each_steps=10 num_evals_final=5 num_outer_steps=30 fb_nstep=3 fb_nstep_src=model fb_nstep_warmup=5000 seed=1 fb_nstep_diag=0.5
