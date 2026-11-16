@@ -1658,7 +1658,8 @@ if __name__ == '__main__':
                 NC, K_cf, CHUNK = 4, 60, 25
                 cf_times = list(range(100, 900, 100))
                 cf_log = CSVLogger(f"{LOGS_FOLDER}/diag_cf.csv", ["task", "n_states", "spearman", "top1", "gain_q", "gain_best",
-                                                                   "g_policy_mean", "q_policy_mean"])
+                                                                   "g_policy_mean", "q_policy_mean", "spearman_k3", "spearman_k10",
+                                                                   "spearman_k30", "top1_k3", "top1_k10", "q_range", "g_range_k3", "g_range_k60"])
                 cf_rng = np.random.default_rng(SEED + 30_000)
                 while len(eval_envs) < CHUNK * NC:
                     eval_envs.append(make_eval_env())
@@ -1667,6 +1668,7 @@ if __name__ == '__main__':
                     z_t = task_zw[b_i][0]
                     pts = [(b_i * DIAG_WM_ENVS + j, t) for j in range(DIAG_WM_ENVS) for t in cf_times]
                     sp, hit, g_q, g_best, g_pi, q_pi = [], [], [], [], [], []
+                    sp_k, hit_k, q_rng, g_rng3, g_rng60 = {3: [], 10: [], 30: []}, {3: [], 10: []}, [], [], []
                     for c0 in range(0, len(pts), CHUNK):
                         chunk = pts[c0:c0 + CHUNK]
                         n_c = len(chunk) * NC
@@ -1690,10 +1692,13 @@ if __name__ == '__main__':
                         zs_c = jnp.repeat(zc, NC, axis=0)
                         acts = cand.reshape(-1, ACTION_DIM)
                         G = np.zeros(n_c)
+                        G_at = {}
                         for k_step in range(K_cf):
                             sts = [env_step(e, a) for e, a in zip(cenvs, acts)]
                             aux_k = np.stack([env_aux(e, s) for e, s in zip(cenvs, sts)])
                             G += gam ** k_step * np.asarray(reward_fn(jnp.asarray(aux_k, dtype=jnp.float32), param))
+                            if k_step + 1 in (3, 10, 30):
+                                G_at[k_step + 1] = G.copy().reshape(len(chunk), NC)
                             acts = np.asarray(agent.act_policy_batch(train_state, jnp.asarray(np.stack(sts).astype(np.float32)), zs_c))
                         G = G.reshape(len(chunk), NC)
                         for s_i in range(len(chunk)):
@@ -1701,9 +1706,20 @@ if __name__ == '__main__':
                             hit.append(float(np.argmax(Qc[s_i]) == np.argmax(G[s_i])))
                             g_q.append(G[s_i, np.argmax(Qc[s_i])] - G[s_i, 0]); g_best.append(G[s_i].max() - G[s_i, 0])
                             g_pi.append(G[s_i, 0]); q_pi.append(Qc[s_i, 0])
+                            q_rng.append(Qc[s_i].max() - Qc[s_i].min()); g_rng60.append(G[s_i].max() - G[s_i].min())
+                            g_rng3.append(G_at[3][s_i].max() - G_at[3][s_i].min())
+                            for kk in (3, 10, 30):
+                                g_k = G_at[kk][s_i]
+                                sp_k[kk].append(float(np.corrcoef(rank(Qc[s_i]), rank(g_k))[0, 1]) if g_k.std() > 1e-9 else np.nan)
+                                if kk in hit_k:
+                                    hit_k[kk].append(float(np.argmax(Qc[s_i]) == np.argmax(g_k)))
                     cf_log.log({'task': label, 'n_states': len(pts), 'spearman': float(np.nanmean(sp)), 'top1': float(np.mean(hit)),
                                 'gain_q': float(np.mean(g_q)), 'gain_best': float(np.mean(g_best)),
-                                'g_policy_mean': float(np.mean(g_pi)), 'q_policy_mean': float(np.mean(q_pi))})
+                                'g_policy_mean': float(np.mean(g_pi)), 'q_policy_mean': float(np.mean(q_pi)),
+                                'spearman_k3': float(np.nanmean(sp_k[3])), 'spearman_k10': float(np.nanmean(sp_k[10])),
+                                'spearman_k30': float(np.nanmean(sp_k[30])), 'top1_k3': float(np.mean(hit_k[3])),
+                                'top1_k10': float(np.mean(hit_k[10])), 'q_range': float(np.mean(q_rng)),
+                                'g_range_k3': float(np.mean(g_rng3)), 'g_range_k60': float(np.mean(g_rng60))})
                     print(f'diag_cf {label}: spearman {np.nanmean(sp):.2f} top1 {np.mean(hit):.2f} gain_q {np.mean(g_q):.2f} best {np.mean(g_best):.2f}')
                 print('wrote', f"{LOGS_FOLDER}/diag_cf.csv")
             print('wrote', f"{LOGS_FOLDER}/diag_wm.csv")
