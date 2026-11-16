@@ -96,3 +96,11 @@ Dated session notes, newest last.
 - v2: rewritten against `docs/writing_checklist.md` (branch writing-checklist). v3 and v4: after two first-reader rounds, each by a fresh agent.
 - Fixed: the z-rescaling argument (z is an input to F and pi; cz is the task vector of c r), the L_B bound (vs the target B, mean-square, dataset actions, factor ||w||), FB optimality (exact vs rank d, z_r only sees the projection of r), claims tied to the CIs, the planning gain not yet separated from action selection by F, walker small-N result where FB beats fbwm, naming (fbwm-MPPI / fbwm-actor).
 - Still TODO in the draft: CIs for Table 2, the model-free best-of-K control, L_B-off and separate-latent ablations, FB baseline details, the quadruped label sweep.
+
+## 2026-11-16: world-model accuracy (open-loop rollouts vs the simulator)
+- Question: is the quadruped world model worse than walker's and cheetah's? Tool: `fbwm.py eval_ckpt=... diag_wm=1` (100-step open-loop rollouts from phi(s_0) with real actions, dataset and policy actions, vs phi(s_t)), report: `python tools/diag_wm_report.py`. Jobs 255116-18, V100, the 9 paper-config checkpoints (consistency 5), about 8 min per env.
+- Latent error normalised by the latent spread (lat_nmse), dataset actions, mean of 3 seeds, t = 1 / 5 / 10 / 25 / 50 / 100: walker 0.03 / 0.07 / 0.17 / 0.78 / 1.62 / 1.82; cheetah 0.01 / 0.02 / 0.04 / 0.11 / 0.26 / 0.50; quadruped 0.05 / 0.19 / 0.34 / 0.73 / 1.10 / 1.37 (1 = as bad as the mean latent).
+- Short horizon (t <= 10, where MPPI plans): quadruped is the worst, about 2x walker and 8x cheetah. Beyond t = 25 walker is the worst and collapses (cos 0.26 at t = 50, quadruped 0.53, cheetah 0.88).
+- The reward is predicted well on quadruped: corr of the planner reward with the true reward at t = 5 is 0.79 imagined vs 0.80 real (dataset), 0.87 vs 0.89 (policy). Walker 0.75 vs 0.76, cheetah 0.52 vs 0.53.
+- The quadruped latent is lossy even on real states: a probe from phi(s) to the 78-d observation has normalised MSE 0.22, walker 0.005, cheetah 0.08. The model error at t = 1 already is near this floor, so the loss is in the encoder (50 dims for 78) more than in the dynamics.
+- Not tested: whether this explains MPPI = policy on quadruped; latent_dim 100 on quadruped would test it (needs the user's yes for a config change per env).
