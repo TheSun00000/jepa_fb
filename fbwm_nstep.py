@@ -773,6 +773,7 @@ if __name__ == '__main__':
         f_encoder_grad:      float = 0.1     # scale of the FB gradient that reaches phi through F's input
         b_encoder_grad:      float = 1.0     # gphi only. Scale of the FB gradient that reaches phi through B = g(phi)
         fb_nstep:            int   = 1       # k of the k-step FB objective (1 = fbwm.py)
+        fb_nstep_until:      int   = 0       # k-step only for updates < fb_nstep_until, then exact 1-step FB (0 = never switch back)
         fb_nstep_warmup:     int   = 0       # updates of 1-step FB (the fbwm.py loss) before switching to k-step (the world model is still bad early on)
         fb_nstep_diag:       float = 1.0     # DEBUG: coefficient of the extra diagonal term (1 = the k-step loss, 0 = off)
         fb_nstep_q:          float = 1.0     # DEBUG: coefficient of b_extra in the Q-loss implicit reward (1 = n-step, 0 = 1-step reward)
@@ -1032,8 +1033,10 @@ if __name__ == '__main__':
             kmask   = 1.0
             if c.fb_nstep_bgrad:
                 assert K > 1 and (c.fb_nstep_src == 'data' or c.variant == 'gphi'), 'fb_nstep_bgrad: fb_nstep>1, and src=data or gphi'
-            if K > 1 and c.fb_nstep_warmup > 0:      # first fb_nstep_warmup updates: exactly the 1-step loss (selected, not recompiled)
+            if K > 1 and (c.fb_nstep_warmup > 0 or c.fb_nstep_until > 0):   # k-step only for warmup <= update < until (selected, not recompiled)
                 use_k   = ts.steps >= c.fb_nstep_warmup
+                if c.fb_nstep_until > 0:
+                    use_k = use_k & (ts.steps < c.fb_nstep_until)
                 b_extra = jnp.where(use_k, b_extra, 0.0)
                 pol_h_K = jnp.where(use_k, pol_h_K, next_h)
                 tgt_h_K = jnp.where(use_k, tgt_h_K, target_h[0])
@@ -1285,7 +1288,8 @@ if __name__ == '__main__':
     if 'fcons_coef' in kwargs:
         tdmpc_config = dataclasses.replace(tdmpc_config, fcons_coef=float(kwargs['fcons_coef']))
     tdmpc_config = dataclasses.replace(tdmpc_config, fb_nstep=FB_NSTEP, fb_nstep_src=FB_NSTEP_SRC,
-                                      fb_nstep_warmup=FB_NSTEP_WARMUP)
+                                      fb_nstep_warmup=FB_NSTEP_WARMUP,
+                                      fb_nstep_until=int(kwargs['fb_nstep_until']) if 'fb_nstep_until' in kwargs else 0)
     for name in ('mixture_coef', 'mppi_init_std'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
