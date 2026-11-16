@@ -1213,9 +1213,12 @@ if __name__ == '__main__':
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
     if 'fcons_coef' in kwargs:
         tdmpc_config = dataclasses.replace(tdmpc_config, fcons_coef=float(kwargs['fcons_coef']))
-    for name in ('mixture_coef', 'mppi_init_std'):
+    for name in ('mixture_coef', 'mppi_init_std', 'temperature', 'min_std', 'momentum'):   # planner settings (eval-time); defaults unchanged
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
+    for name in ('iterations', 'num_samples', 'num_elites'):
+        if name in kwargs:
+            tdmpc_config = dataclasses.replace(tdmpc_config, **{name: int(kwargs[name])})
     for name in ('fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: str(kwargs[name]).lower() in ('1', 'true')})

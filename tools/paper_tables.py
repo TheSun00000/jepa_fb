@@ -121,7 +121,7 @@ for folder, kw, ev in runs('2026-11-1[5-9]_*'):
         LATE['fb_old' if old_ckpt else 'fb'].append(('fb', env, kw['seed'], n, f(r['mean_over_tasks']), folder))
     elif (kw.get('variant') == 'gphi' and kw.get('mppi_reward') == 'lstsq' and kw.get('z_cov') == 'dataset' and 'z_dim' not in kw
           and str(kw.get('consistency_coef')) == PAPER_CONS and 'FBWMBTD' not in folder
-          and not any(k in kw for k in ('horizon', 'mppi_init_policy', 'mixture_coef', 'mppi_terminal_only', 'mppi_norm'))):
+          and not any(k in kw for k in ('horizon', 'mppi_init_policy', 'mixture_coef', 'mppi_terminal_only', 'mppi_norm', 'z_ridge', 'num_samples', 'iterations', 'num_elites', 'temperature', 'min_std', 'momentum', 'mppi_init_std', 'diag_profile', 'diag_wm'))):
         tier = 'root' if str(kw.get('mppi_root_check')) in ('1', 'True', 'true') else 'noroot'
         LATE[tier].append(('fbwm', env, kw['seed'], n, f(r['mean_over_tasks']), folder))
         LATE[tier].append(('fbwm_policy', env, kw['seed'], n, f(r['policy_mean_over_tasks']), folder))
