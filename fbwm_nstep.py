@@ -1023,15 +1023,15 @@ if __name__ == '__main__':
                     a = self.pi(ts.pi_params, h, z, k_j, c.stddev)
                     h = self.next(ts.params, h, a)
                     if c.fb_nstep_tgtb:                                                            # gphi: EMA target g(h)
-                        return h, self.b_from_latent(ts.target_params['b'], h)
-                    return h, self.reward_feature(ts.b_params, ts.bh_params, h)                    # sepB B_hat(h), gphi g(h)
-                h_K, B_mid = jax.lax.scan(nstep_step, next_h, jax.random.split(jax.random.fold_in(k_next, 1), K - 1))
+                        return h, (h, self.b_from_latent(ts.target_params['b'], h))
+                    return h, (h, self.reward_feature(ts.b_params, ts.bh_params, h))               # sepB B_hat(h), gphi g(h)
+                h_K, (h_im_mid, B_mid) = jax.lax.scan(nstep_step, next_h, jax.random.split(jax.random.fold_in(k_next, 1), K - 1))
                 b_extra = ((c.discount ** jnp.arange(1, K, dtype=jnp.float32))[:, None, None] * B_mid).sum(0)   # (B,D)
                 pol_h_K = tgt_h_K = h_K                                                            # imagined latent of s_K
             gamma_k = c.discount ** K
             kmask   = 1.0
             if c.fb_nstep_bgrad:
-                assert c.fb_nstep_src == 'data' and K > 1, 'fb_nstep_bgrad needs fb_nstep_src=data and fb_nstep>1'
+                assert K > 1 and (c.fb_nstep_src == 'data' or c.variant == 'gphi'), 'fb_nstep_bgrad: fb_nstep>1, and src=data or gphi'
             if K > 1 and c.fb_nstep_warmup > 0:      # first fb_nstep_warmup updates: exactly the 1-step loss (selected, not recompiled)
                 use_k   = ts.steps >= c.fb_nstep_warmup
                 b_extra = jnp.where(use_k, b_extra, 0.0)
@@ -1096,7 +1096,10 @@ if __name__ == '__main__':
                 B_s    = self.backward(enc_b, b_params, obs[1])                                     # (B,D): B(s'_j)
                 b_live = None
                 if c.fb_nstep_bgrad:    # B on the dataset states s_2..s_K, with gradient (into B and, scaled by b_encoder_grad, phi)
-                    B_j    = self.backward(enc_b, b_params, obs[2:K + 1])                           # (K-1,B,D)
+                    if c.fb_nstep_src == 'data':
+                        B_j = self.backward(enc_b, b_params, obs[2:K + 1])                         # (K-1,B,D)
+                    else:                                                                          # model: g on the imagined latents (constants), gradient into g only
+                        B_j = self.b_from_latent(b_params, h_im_mid)
                     w_j    = (c.discount ** jnp.arange(1, K, dtype=jnp.float32))[:, None, None]
                     b_live = (w_j * B_j).sum(0) * kmask
                 fb_loss, fb_aux = fb_losses(F1, F2, B_s, z, target_M, next_Q, gamma_k, c.q_loss_coef, c.q_loss,
