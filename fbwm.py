@@ -1214,7 +1214,7 @@ if __name__ == '__main__':
     for name in ('fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: str(kwargs[name]).lower() in ('1', 'true')})
-    for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'hidden_dim', 'feature_dim'):
+    for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'hidden_dim', 'feature_dim', 'mlp_dim'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: int(kwargs[name])})
     if VARIANT == 'sepB':
