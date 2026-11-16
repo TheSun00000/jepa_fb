@@ -112,8 +112,9 @@ if __name__ == '__main__':
 
     FB_NSTEP     = int(kwargs['fb_nstep']) if 'fb_nstep' in kwargs else 1
     FB_NSTEP_SRC = str(kwargs['fb_nstep_src']) if 'fb_nstep_src' in kwargs else 'model'
+    FB_NSTEP_WARMUP = int(kwargs['fb_nstep_warmup']) if 'fb_nstep_warmup' in kwargs else 0   # updates of plain 1-step FB before k-step
     assert FB_NSTEP >= 1 and FB_NSTEP_SRC in ('model', 'data'), 'fb_nstep>=1, fb_nstep_src=model|data'
-    exp_name = f'FBWMN{FB_NSTEP}{FB_NSTEP_SRC[0]}-{VARIANT}{"-identity" if PHI_IDENTITY else ""}-{ENV_NAME}'
+    exp_name = f'FBWMN{FB_NSTEP}{FB_NSTEP_SRC[0]}{"w" if FB_NSTEP_WARMUP else ""}-{VARIANT}{"-identity" if PHI_IDENTITY else ""}-{ENV_NAME}'
 
     while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
         LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
@@ -771,6 +772,7 @@ if __name__ == '__main__':
         f_encoder_grad:      float = 0.1     # scale of the FB gradient that reaches phi through F's input
         b_encoder_grad:      float = 1.0     # gphi only. Scale of the FB gradient that reaches phi through B = g(phi)
         fb_nstep:            int   = 1       # k of the k-step FB objective (1 = fbwm.py)
+        fb_nstep_warmup:     int   = 0       # updates of 1-step FB (the fbwm.py loss) before switching to k-step (the world model is still bad early on)
         fb_nstep_src:        str   = 'model' # s_2..s_k: 'model' (pi_z rollout in the world model) | 'data' (dataset states)
         q_loss:              bool  = True    # FB's auxiliary Q-loss
         q_loss_coef:         float = 0.01
@@ -1019,6 +1021,13 @@ if __name__ == '__main__':
                 h_K, B_mid = jax.lax.scan(nstep_step, next_h, jax.random.split(jax.random.fold_in(k_next, 1), K - 1))
                 b_extra = ((c.discount ** jnp.arange(1, K, dtype=jnp.float32))[:, None, None] * B_mid).sum(0)   # (B,D)
                 pol_h_K = tgt_h_K = h_K                                                            # imagined latent of s_K
+            gamma_k = c.discount ** K
+            if K > 1 and c.fb_nstep_warmup > 0:      # first fb_nstep_warmup updates: exactly the 1-step loss (selected, not recompiled)
+                use_k   = ts.steps >= c.fb_nstep_warmup
+                b_extra = jnp.where(use_k, b_extra, 0.0)
+                pol_h_K = jnp.where(use_k, pol_h_K, next_h)
+                tgt_h_K = jnp.where(use_k, tgt_h_K, target_h[0])
+                gamma_k = jnp.where(use_k, gamma_k, c.discount)
             # FB target: target F at the latent of s_K, with the action of the (noisy) policy there
             next_a   = self.pi(ts.pi_params, pol_h_K, z, k_next, c.stddev)
             tF1, tF2 = self.F(ts.target_params['f'], tgt_h_K, next_a, z)                           # (B,D)
@@ -1074,7 +1083,7 @@ if __name__ == '__main__':
                 h0     = self.encode(enc_f, obs[0])
                 F1, F2 = self.F(f_params, h0, action[0], z)                                         # (B,D)
                 B_s    = self.backward(enc_b, b_params, obs[1])                                     # (B,D): B(s'_j)
-                fb_loss, fb_aux = fb_losses(F1, F2, B_s, z, target_M, next_Q, c.discount ** K, c.q_loss_coef, c.q_loss,
+                fb_loss, fb_aux = fb_losses(F1, F2, B_s, z, target_M, next_Q, gamma_k, c.q_loss_coef, c.q_loss,
                                             b_extra=b_extra)
                 b_ortho = gram_ortho(B_s)
                 b_std, b_cov_l2, b_mean_norm = feature_stats(B_s)
@@ -1256,7 +1265,8 @@ if __name__ == '__main__':
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
     if 'fcons_coef' in kwargs:
         tdmpc_config = dataclasses.replace(tdmpc_config, fcons_coef=float(kwargs['fcons_coef']))
-    tdmpc_config = dataclasses.replace(tdmpc_config, fb_nstep=FB_NSTEP, fb_nstep_src=FB_NSTEP_SRC)
+    tdmpc_config = dataclasses.replace(tdmpc_config, fb_nstep=FB_NSTEP, fb_nstep_src=FB_NSTEP_SRC,
+                                      fb_nstep_warmup=FB_NSTEP_WARMUP)
     for name in ('mixture_coef', 'mppi_init_std'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
