@@ -476,6 +476,9 @@ if __name__ == '__main__':
     DIAG_WM_ENVS = int(kwargs['diag_wm_envs']) if 'diag_wm_envs' in kwargs else 10
     # diag_wm_cf=1 (with diag_wm=1): counterfactual action ranking, see (4) in the DIAG_WM block (dm_control envs only)
     DIAG_WM_CF = str(kwargs.get('diag_wm_cf', '0')).lower() in ('1', 'true')
+    # diag_profile=1 (eval_ckpt): time profile of real episodes (policy and MPPI): true reward, aux and, on cheetah, the torso pitch,
+    # per 200-step segment (diag_profile.csv). Then exit.
+    DIAG_PROFILE = str(kwargs.get('diag_profile', '0')).lower() in ('1', 'true')
     # Number of benchmark tasks rolled out in parallel during eval (each one needs NUM_EVALS env instances)
     EVAL_CHUNK = int(kwargs['eval_chunk']) if 'eval_chunk' in kwargs else N_BENCH
 
@@ -1464,6 +1467,36 @@ if __name__ == '__main__':
                                      'r_corr': float(np.corrcoef(rr, ri)[0, 1]), 'f_real_mean': float(qr.mean()),
                                      'f_imag_mean': float(qi.mean())})
             print('wrote', f"{LOGS_FOLDER}/diag_f.csv")
+        if DIAG_PROFILE:
+            enc_p, b_par_p = train_state.params['encoder'], train_state.b_params
+            n_ep, seg = DIAG_WM_ENVS, 200
+            cov_obs_p = replay_buffer.sample(next_eval_key(), Z_COV_STATES)[0] if Z_COV == 'dataset' else None
+            zs_l, ws_l = [], []
+            for reward_fn, label, param in benchmarks:
+                for _ in range(n_ep):
+                    lab_obs, _, _, lab_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
+                    z_t, _ = agent.infer_z(enc_p, b_par_p, lab_obs, reward_fn(lab_aux, param))
+                    _, w_t, _ = agent.infer_zw(enc_p, b_par_p, lab_obs, reward_fn(lab_aux, param), Z_RIDGE, cov_obs_p)
+                    zs_l.append(z_t); ws_l.append(w_t if MPPI_REWARD == 'lstsq' else z_t)
+            zs_p, ws_p = jnp.stack(zs_l), jnp.stack(ws_l)
+            prof_log = CSVLogger(f"{LOGS_FOLDER}/diag_profile.csv",
+                                 ["source", "task", "seg", "reward", "aux0", "aux1", "pitch_abs", "ret"])
+            for src in ('policy', 'mppi'):
+                obs_p, aux_p, _ = rollout_batch(train_state, zs_p, next_eval_key(), src, ws_p if MPPI_REWARD == 'lstsq' else None)
+                for b_i, (reward_fn, label, param) in enumerate(benchmarks):
+                    sl = slice(b_i * n_ep, (b_i + 1) * n_ep)
+                    r = np.asarray(reward_fn(jnp.asarray(aux_p[sl], dtype=jnp.float32), param))             # (n_ep, T)
+                    ret = float(r.sum(1).mean())
+                    for k in range(EVAL_STEPS // seg):
+                        ss = slice(k * seg, (k + 1) * seg)
+                        prof_log.log({'source': src, 'task': label, 'seg': k, 'reward': float(r[:, ss].mean()),
+                                      'aux0': float(aux_p[sl][:, ss, 0].mean()), 'aux1': float(aux_p[sl][:, ss, 1].mean()),
+                                      'pitch_abs': float(np.abs(obs_p[sl][:, ss, 1]).mean()) if ENV_NAME == 'cheetah' else '',
+                                      'ret': ret})
+                    print('diag_profile', src, label, 'return', round(ret, 1))
+            print('wrote', f"{LOGS_FOLDER}/diag_profile.csv")
+            mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
+            sys.exit(0)
         if DIAG_WM:
             # Open-loop accuracy of the world model far past its training horizon, against the real simulator. Two sources:
             #   'dataset': random dataset sub-trajectories with the dataset actions (latent metrics are task-independent and
