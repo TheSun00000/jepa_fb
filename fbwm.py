@@ -474,6 +474,8 @@ if __name__ == '__main__':
     DIAG_WM = str(kwargs.get('diag_wm', '0')).lower() in ('1', 'true')
     DIAG_WM_H = int(kwargs['diag_wm_h']) if 'diag_wm_h' in kwargs else 100
     DIAG_WM_ENVS = int(kwargs['diag_wm_envs']) if 'diag_wm_envs' in kwargs else 10
+    # diag_wm_cf=1 (with diag_wm=1): counterfactual action ranking, see (4) in the DIAG_WM block (dm_control envs only)
+    DIAG_WM_CF = str(kwargs.get('diag_wm_cf', '0')).lower() in ('1', 'true')
     # Number of benchmark tasks rolled out in parallel during eval (each one needs NUM_EVALS env instances)
     EVAL_CHUNK = int(kwargs['eval_chunk']) if 'eval_chunk' in kwargs else N_BENCH
 
@@ -1593,10 +1595,12 @@ if __name__ == '__main__':
                 eval_envs.append(make_eval_env())
             envs = eval_envs[:n]
             states = [env_reset(e) for e in envs]
-            obs_l, act_l, aux_l = [], [], []
+            obs_l, act_l, aux_l, phys_tr_l = [], [], [], []
             for step in tqdm(range(EVAL_STEPS), leave=False):
                 obs = np.stack(states).astype(np.float32)
                 aux_l.append(np.stack([env_aux(e, s) for e, s in zip(envs, states)]))
+                if DIAG_WM_CF:
+                    phys_tr_l.append(np.stack([env_physics(e) for e in envs]))
                 actions = np.asarray(agent.act_policy_batch(train_state, jnp.asarray(obs), zs))
                 obs_l.append(obs); act_l.append(actions)
                 states = [env_step(e, a) for e, a in zip(envs, actions)]
@@ -1641,6 +1645,67 @@ if __name__ == '__main__':
                           'g_proj_mean': float(Gp.mean()), 'proj_corr': cc(Gp, Gt), 'q_corr_true': cc(Qm, Gt),
                           'ep_return': float(r_true.sum(0).mean())})
             print('wrote', f"{LOGS_FOLDER}/diag_q.csv")
+
+            # (4) counterfactual action ranking: does Q(s, a', z) rank the first action correctly? From recorded states of the policy
+            # episodes (10 per task x 8 times), the simulator is reset to the state and NC first actions are tried: the policy's
+            # own, it plus noise (0.3, 0.6), a uniform random one; then the deterministic policy for K steps. G = real discounted
+            # return of the TRUE task reward after the first action (same convention as Q = F^T z).
+            #   spearman : mean over states of the rank correlation of Q and G across the NC actions
+            #   top1     : fraction of states where argmax Q is also argmax G (chance 1/NC)
+            #   gain_q   : mean [G(argmax Q action) - G(policy action)]; gain_best : mean [max G - G(policy action)] (the ceiling)
+            if DIAG_WM_CF:
+                phys_tr = np.stack(phys_tr_l)                                                    # (EVAL_STEPS, n, P)
+                NC, K_cf, CHUNK = 4, 60, 25
+                cf_times = list(range(100, 900, 100))
+                cf_log = CSVLogger(f"{LOGS_FOLDER}/diag_cf.csv", ["task", "n_states", "spearman", "top1", "gain_q", "gain_best",
+                                                                   "g_policy_mean", "q_policy_mean"])
+                cf_rng = np.random.default_rng(SEED + 30_000)
+                while len(eval_envs) < CHUNK * NC:
+                    eval_envs.append(make_eval_env())
+                rank = lambda x: np.argsort(np.argsort(x))
+                for b_i, (reward_fn, label, param) in enumerate(benchmarks):
+                    z_t = task_zw[b_i][0]
+                    pts = [(b_i * DIAG_WM_ENVS + j, t) for j in range(DIAG_WM_ENVS) for t in cf_times]
+                    sp, hit, g_q, g_best, g_pi, q_pi = [], [], [], [], [], []
+                    for c0 in range(0, len(pts), CHUNK):
+                        chunk = pts[c0:c0 + CHUNK]
+                        n_c = len(chunk) * NC
+                        cenvs = eval_envs[:n_c]
+                        o0 = np.stack([obs_tr[t, i] for i, t in chunk]).astype(np.float32)                    # (S, D)
+                        zc = jnp.broadcast_to(z_t, (len(chunk), z_t.shape[0]))
+                        a_pi = np.asarray(agent.act_policy_batch(train_state, jnp.asarray(o0), zc))               # (S, A)
+                        cand = np.stack([a_pi,
+                                         np.clip(a_pi + 0.3 * cf_rng.standard_normal(a_pi.shape), -1, 1),
+                                         np.clip(a_pi + 0.6 * cf_rng.standard_normal(a_pi.shape), -1, 1),
+                                         cf_rng.uniform(-1, 1, a_pi.shape)], 1).astype(np.float32)           # (S, NC, A)
+                        h0 = agent.encode(enc, jnp.asarray(o0))
+                        Qc = np.zeros((len(chunk), NC))
+                        for c in range(NC):
+                            F1, F2 = agent.F(train_state.f_params, h0, jnp.asarray(cand[:, c]), zc)
+                            Qc[:, c] = np.asarray(jnp.minimum((F1 * zc).sum(-1), (F2 * zc).sum(-1)))
+                        for k, e in enumerate(cenvs):
+                            e.reset()
+                            e.physics.set_state(phys_tr[chunk[k // NC][1], chunk[k // NC][0]])
+                            e.physics.forward()
+                        zs_c = jnp.repeat(zc, NC, axis=0)
+                        acts = cand.reshape(-1, ACTION_DIM)
+                        G = np.zeros(n_c)
+                        for k_step in range(K_cf):
+                            sts = [env_step(e, a) for e, a in zip(cenvs, acts)]
+                            aux_k = np.stack([env_aux(e, s) for e, s in zip(cenvs, sts)])
+                            G += gam ** k_step * np.asarray(reward_fn(jnp.asarray(aux_k, dtype=jnp.float32), param))
+                            acts = np.asarray(agent.act_policy_batch(train_state, jnp.asarray(np.stack(sts).astype(np.float32)), zs_c))
+                        G = G.reshape(len(chunk), NC)
+                        for s_i in range(len(chunk)):
+                            sp.append(float(np.corrcoef(rank(Qc[s_i]), rank(G[s_i]))[0, 1]) if G[s_i].std() > 1e-6 else np.nan)
+                            hit.append(float(np.argmax(Qc[s_i]) == np.argmax(G[s_i])))
+                            g_q.append(G[s_i, np.argmax(Qc[s_i])] - G[s_i, 0]); g_best.append(G[s_i].max() - G[s_i, 0])
+                            g_pi.append(G[s_i, 0]); q_pi.append(Qc[s_i, 0])
+                    cf_log.log({'task': label, 'n_states': len(pts), 'spearman': float(np.nanmean(sp)), 'top1': float(np.mean(hit)),
+                                'gain_q': float(np.mean(g_q)), 'gain_best': float(np.mean(g_best)),
+                                'g_policy_mean': float(np.mean(g_pi)), 'q_policy_mean': float(np.mean(q_pi))})
+                    print(f'diag_cf {label}: spearman {np.nanmean(sp):.2f} top1 {np.mean(hit):.2f} gain_q {np.mean(g_q):.2f} best {np.mean(g_best):.2f}')
+                print('wrote', f"{LOGS_FOLDER}/diag_cf.csv")
             print('wrote', f"{LOGS_FOLDER}/diag_wm.csv")
             mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
             sys.exit(0)
