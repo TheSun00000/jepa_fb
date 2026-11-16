@@ -775,6 +775,7 @@ if __name__ == '__main__':
         fb_nstep_warmup:     int   = 0       # updates of 1-step FB (the fbwm.py loss) before switching to k-step (the world model is still bad early on)
         fb_nstep_diag:       float = 1.0     # DEBUG: coefficient of the extra diagonal term (1 = the k-step loss, 0 = off)
         fb_nstep_q:          float = 1.0     # DEBUG: coefficient of b_extra in the Q-loss implicit reward (1 = n-step, 0 = 1-step reward)
+        fb_nstep_tgtb:       bool  = False   # DEBUG (gphi): the extra positives B(s_j), j>=2, come from the EMA target g (and EMA phi for src=data)
         fb_nstep_src:        str   = 'model' # s_2..s_k: 'model' (pi_z rollout in the world model) | 'data' (dataset states)
         q_loss:              bool  = True    # FB's auxiliary Q-loss
         q_loss_coef:         float = 0.01
@@ -1010,7 +1011,7 @@ if __name__ == '__main__':
                     B_mid, pol_h_K = B_all[2:K + 1], h_all[K]
                 else:
                     h_mid   = self.encode(ts.params['encoder'], obs[2:K + 1])                     # (K-1,B,L) online phi(s_j)
-                    B_mid   = self.b_from_latent(ts.b_params, h_mid)
+                    B_mid   = target_B_all[1:K] if c.fb_nstep_tgtb else self.b_from_latent(ts.b_params, h_mid)
                     pol_h_K = h_mid[-1]
                 tgt_h_K = target_h[K - 1]                                                          # EMA phi(s_K)
                 b_extra = (c.discount ** jnp.arange(1, K, dtype=jnp.float32))[:, None, None] * B_mid
@@ -1019,6 +1020,8 @@ if __name__ == '__main__':
                 def nstep_step(h, k_j):
                     a = self.pi(ts.pi_params, h, z, k_j, c.stddev)
                     h = self.next(ts.params, h, a)
+                    if c.fb_nstep_tgtb:                                                            # gphi: EMA target g(h)
+                        return h, self.b_from_latent(ts.target_params['b'], h)
                     return h, self.reward_feature(ts.b_params, ts.bh_params, h)                    # sepB B_hat(h), gphi g(h)
                 h_K, B_mid = jax.lax.scan(nstep_step, next_h, jax.random.split(jax.random.fold_in(k_next, 1), K - 1))
                 b_extra = ((c.discount ** jnp.arange(1, K, dtype=jnp.float32))[:, None, None] * B_mid).sum(0)   # (B,D)
@@ -1275,7 +1278,9 @@ if __name__ == '__main__':
     for name in ('fb_nstep_diag', 'fb_nstep_q'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
-    for name in ('q_loss', 'fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
+    if 'fb_nstep_tgtb' in kwargs:
+        assert VARIANT == 'gphi', 'fb_nstep_tgtb is gphi only'
+    for name in ('q_loss', 'fb_nstep_tgtb', 'fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: str(kwargs[name]).lower() in ('1', 'true')})
     for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'hidden_dim', 'feature_dim'):
