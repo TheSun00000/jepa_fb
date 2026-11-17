@@ -874,6 +874,8 @@ if __name__ == '__main__':
     fb_config = FBConfig(batch_size=BATCH_SIZE, q_loss=bool(Q_LOSS))
     if 'q_loss_coef' in kwargs:   # paper: 1/z_dim
         fb_config = dataclasses.replace(fb_config, q_loss_coef=float(kwargs['q_loss_coef']))
+    if 'tau' in kwargs:   # target-network coefficient (default 0.01; TD-JEPA's FB uses 0.001)
+        fb_config = dataclasses.replace(fb_config, fb_target_tau=float(kwargs['tau']))
     if 'discount' in kwargs:
         fb_config = dataclasses.replace(fb_config, discount=float(kwargs['discount']))
     if 'z_dim' in kwargs:   # size of B, F's output and z (default 50)
