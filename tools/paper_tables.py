@@ -156,6 +156,7 @@ for (m, env, seed, n, score, folder) in LATE['fb_old']:
 # ── main table ─────────────────────────────────────────────────────────────────────────────────────────────────────
 ROWS = [
     ('toplines: true reward, trained per task', [('tdmpc', 'TD-MPC (MPPI)', 'per task, ~35 min'),
+                                                 ('tdmpc_policy', 'TD-MPC (policy)', 'per task, ~35 min'),
                                                  ('td3', 'offline TD3', 'per task, ~8 min')]),
     ('adaptation: reward-free world model + N labels', [('adapt_full', 'TD-MPC heads, full dataset', 'per task, ~20 s'),
                                                         ('adapt_labels', 'TD-MPC heads, labels only (Dyna)', 'per task, ~20 s')]),
