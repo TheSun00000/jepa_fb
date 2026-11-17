@@ -130,6 +130,7 @@ input[type="text"] { width: min(260px, 100%); }
 .btn { background: transparent; border: 1px solid var(--line-2); padding: 4px 10px; cursor: pointer; color: var(--ink); }
 .btn:hover { border-color: var(--mppi); color: var(--mppi); }
 .btn.quiet { border-color: transparent; color: var(--dim); padding: 0 4px; }
+.btn.on { border-color: var(--mppi); color: var(--mppi); background: var(--mppi-soft); }
 
 /* detail */
 .detail-grid { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: var(--s2) 0; }
@@ -214,6 +215,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     <div class="pane">
       <header><h2><span class="hash">#</span>Results per task</h2><span class="label" id="tt-when">per-task table</span></header>
       <p class="note" id="tt-protocol"></p>
+      <div class="filters" id="tt-tabs" role="group" aria-label="environment"></div>
       <div id="task-table"></div>
     </div>
     <div class="pane">
@@ -683,12 +685,18 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
       el("span", { text: "Written by tools/paper_tables.py (collection paper, document task_table)." })])); return; }
     $("tt-protocol").textContent = T.protocol || "";
     $("tt-when").textContent = T.updated ? "as of " + T.updated : "per-task table";
-    var cols = T.columns || [], envs = [];
-    cols.forEach(function (c) { if (!envs.length || envs[envs.length - 1].env !== c.env) envs.push({ env: c.env, n: 0 }); envs[envs.length - 1].n++; });
+    var allCols = T.columns || [], envs = [];
+    allCols.forEach(function (c) { if (envs.indexOf(c.env) < 0) envs.push(c.env); });
+    if (envs.indexOf(S.ttEnv) < 0) S.ttEnv = envs[0];
+    var tabs = $("tt-tabs"); clear(tabs);
+    envs.forEach(function (e) {
+      var b = el("button", { cls: "btn" + (e === S.ttEnv ? " on" : ""), type: "button", "aria-pressed": e === S.ttEnv ? "true" : "false", text: e });
+      b.addEventListener("click", function () { S.ttEnv = e; renderTaskTable(); });
+      tabs.appendChild(b);
+    });
+    var cols = allCols.filter(function (c) { return c.env === S.ttEnv; });
     var t = el("table", { cls: "mt" });
-    var h1 = [el("th", { text: "method", rowspan: "2" })].concat(envs.map(function (e) { return el("th", { cls: "num", colspan: String(e.n), text: e.env }); }));
-    var h2 = cols.map(function (c) { return el("th", { cls: "num", text: c.task }); });
-    t.appendChild(el("thead", null, [el("tr", null, h1), el("tr", null, h2)]));
+    t.appendChild(el("thead", null, [el("tr", null, [el("th", { text: "method" })].concat(cols.map(function (c) { return el("th", { cls: "num", text: c.task }); })))]));
     var tb = el("tbody");
     (T.rows || []).forEach(function (r) {
       var tds = [el("td", { text: r.label, title: r.training || "" })];
