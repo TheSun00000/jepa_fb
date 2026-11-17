@@ -403,6 +403,16 @@ if __name__ == '__main__':
                 h, w = h * block_size * 2, w * block_size * 2
                 ax.add_patch(patches.Rectangle((x, y), h, w, linewidth=2, edgecolor='gray', facecolor='gray'))
 
+    # Corrections to match the ORIGINAL FB code (controllable_agent fb_ddpg.py), 2026-11-17. They change the defaults of fb_jax.py:
+    #   phi_layers=0  : F reads the observation directly (plain FB). Before, F had a 2-layer MLP (64 units, 50 outputs) in front of the observation
+    #                   (ForwardMap.phi_layers default 2, never overridden); the original has none.
+    #   ortho_init=1  : orthogonal init (gain 1) and zero bias for every Linear of F / B / actor (utils.weight_init in the original);
+    #                   before, torch's default init U(-1/sqrt(fan_in), 1/sqrt(fan_in)).
+    #   q_loss=0      : no Q loss (the original's default is q_loss=False); before, q_loss on with coefficient 0.01.
+    # phi_layers=2 ortho_init=0 q_loss=1 give back the previous behaviour.
+    PHI_LAYERS = int(kwargs.get('phi_layers', 0))
+    ORTHO_INIT = int(kwargs.get('ortho_init', 1))
+    Q_LOSS     = int(kwargs.get('q_loss', 0))
     N_BENCH   = len(benchmarks)
     NUM_EVALS = 5             # episodes per task at the periodic evals (tag 'eval')
     NUM_EVALS_LATE = 10       # ... in the last 10% of training (since 2026-11-17: 5 early, 10 late, to save time)
@@ -496,8 +506,12 @@ if __name__ == '__main__':
             fan_in = x.shape[-1]
             bound  = 1.0 / math.sqrt(fan_in)
             init   = lambda key, shape, dtype=jnp.float32: jax.random.uniform(key, shape, dtype, -bound, bound)
-            kernel = self.param('kernel', init, (fan_in, self.features))
-            bias   = self.param('bias', init, (self.features,))
+            if ORTHO_INIT:   # the original's utils.weight_init: orthogonal weight (gain 1), zero bias
+                kernel = self.param('kernel', nn.initializers.orthogonal(), (fan_in, self.features))
+                bias   = self.param('bias', nn.initializers.zeros, (self.features,))
+            else:
+                kernel = self.param('kernel', init, (fan_in, self.features))
+                bias   = self.param('bias', init, (self.features,))
             return x @ kernel + bias
 
     def normalize(x, eps=1e-12):
@@ -659,7 +673,7 @@ if __name__ == '__main__':
             self.obs_dim    = obs_dim
             self.action_dim = action_dim
 
-            self.forward_net  = ForwardMap(config.hidden_dim, config.feature_dim, config.z_dim, config.add_trunk)
+            self.forward_net  = ForwardMap(config.hidden_dim, config.feature_dim, config.z_dim, config.add_trunk, phi_layers=PHI_LAYERS)
             self.backward_net = BackwardMap(config.backward_hidden_dim, config.z_dim, config.norm_z)
             self.actor_net    = Actor(config.hidden_dim, config.feature_dim, action_dim, config.add_trunk)
 
@@ -852,7 +866,7 @@ if __name__ == '__main__':
             )
             return ts, metrics
 
-    fb_config = FBConfig(batch_size=BATCH_SIZE)
+    fb_config = FBConfig(batch_size=BATCH_SIZE, q_loss=bool(Q_LOSS))
     if 'discount' in kwargs:
         fb_config = dataclasses.replace(fb_config, discount=float(kwargs['discount']))
     if 'z_dim' in kwargs:   # size of B, F's output and z (default 50)
@@ -860,6 +874,7 @@ if __name__ == '__main__':
     print(fb_config)
     with open(f'{LOGS_FOLDER}/info.txt', 'a') as file:
         file.write(str(fb_config) + '\n')
+        file.write(f'phi_layers={PHI_LAYERS} ortho_init={ORTHO_INIT} q_loss={Q_LOSS} label_align={LABEL_ALIGN}\n')
 
     agent = FBAgent(fb_config, obs_dim=STATE_DIM, action_dim=ACTION_DIM)
 
