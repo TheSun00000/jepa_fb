@@ -137,6 +137,10 @@ class FBAgent:
         self.backward_target.load_state_dict(self.backward_net.state_dict())
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=c['lr'])
         self.fb_opt = torch.optim.Adam([{'params': self.forward_net.parameters()}, {'params': self.backward_net.parameters()}], lr=c['lr'])
+        bs = c['batch_size']
+        self.off_diag = 1.0 - torch.eye(bs, device=device)       # float mask (no boolean indexing: it forces a host sync)
+        self.n_off = float(bs * (bs - 1))
+        self.eye_z = torch.eye(c['z_dim'], device=device)
 
     def sample_z(self, n):
         return math.sqrt(self.c['z_dim']) * F.normalize(torch.randn(n, self.c['z_dim'], device=self.dev), dim=1)
@@ -146,11 +150,10 @@ class FBAgent:
         z = self.sample_z(bs)
         # mix: part of the z are B of (shuffled) states
         perm = torch.randperm(bs, device=self.dev)
-        mix = torch.rand(bs, device=self.dev) < c['mix_ratio']
-        if mix.any():
-            with torch.no_grad():
-                mz = self.backward_net(obs[perm][mix])
-            z[mix] = math.sqrt(c['z_dim']) * F.normalize(mz, dim=1)
+        mix = (torch.rand(bs, 1, device=self.dev) < c['mix_ratio'])
+        with torch.no_grad():
+            mz = self.backward_net(obs[perm])     # B is already sqrt(d) * normalize(.), as the original's mix_z
+        z = torch.where(mix, mz, z)
 
         # ── FB loss
         with torch.no_grad():
@@ -161,8 +164,8 @@ class FBAgent:
         F1, F2 = self.forward_net(obs, z, action)
         B = self.backward_net(next_obs)
         M1, M2 = F1 @ B.T, F2 @ B.T
-        off_diag = ~torch.eye(bs, dtype=torch.bool, device=self.dev)
-        fb_offdiag = 0.5 * sum((M - discount * target_M)[off_diag].pow(2).mean() for M in (M1, M2))
+        off, n_off = self.off_diag, self.n_off
+        fb_offdiag = 0.5 * sum((((M - discount * target_M) ** 2) * off).sum() / n_off for M in (M1, M2))
         fb_diag = -sum(M.diag().mean() for M in (M1, M2))
         fb_loss = fb_offdiag + fb_diag
         q_loss = torch.zeros((), device=self.dev)
@@ -174,7 +177,7 @@ class FBAgent:
             q_loss = F.mse_loss((F1 * z).sum(1), target_Q) + F.mse_loss((F2 * z).sum(1), target_Q)
             fb_loss = fb_loss + c['q_loss_coef'] * q_loss
         Cov = B @ B.T
-        orth = Cov[off_diag].pow(2).mean() - 2 * Cov.diag().mean()
+        orth = ((Cov ** 2) * off).sum() / n_off - 2 * Cov.diag().mean()
         fb_loss = fb_loss + c['ortho_coef'] * orth
         self.fb_opt.zero_grad(set_to_none=True)
         fb_loss.backward()
@@ -194,7 +197,7 @@ class FBAgent:
             for n, t in ((self.forward_net, self.forward_target), (self.backward_net, self.backward_target)):
                 for p, tp in zip(n.parameters(), t.parameters()):
                     tp.data.copy_(c['tau'] * p.data + (1 - c['tau']) * tp.data)
-        eye_diff = B.detach().T @ B.detach() / bs - torch.eye(B.shape[1], device=self.dev)
+        eye_diff = B.detach().T @ B.detach() / bs - self.eye_z
         return torch.stack([fb_loss.detach(), fb_offdiag.detach(), fb_diag.detach(), q_loss.detach(), orth.detach(),
                             eye_diff.norm() / math.sqrt(B.shape[1]), M1.detach().mean(), target_M.mean(), Q.detach().mean()])
 
@@ -333,7 +336,8 @@ def main():
         agent.load(ck['agent']); start = ck['step']
         print('resumed at', start, flush=True)
 
-    tlog = csv.writer(open(f'{logd}/training_log.csv', 'w'))
+    tlog_f = open(f'{logd}/training_log.csv', 'w')
+    tlog = csv.writer(tlog_f)
     tlog.writerow(['step'] + FBAgent.METRICS + ['time'])
     elog_f = open(f'{logd}/eval_log.csv', 'w')
     elog = csv.writer(elog_f)
@@ -356,7 +360,11 @@ def main():
         obs, action, next_obs, _ = data.sample(c['batch_size'])
         acc += agent.update(obs, action, next_obs, torch.full((c['batch_size'], 1), c['discount'], device=dev))
         if step % c['log_every'] == 0:
-            tlog.writerow([step] + [round(x, 5) for x in (acc / c['log_every']).tolist()] + [round(time.time() - t0, 2)])
+            tlog_last = round(time.time() - t0, 2)
+            tlog.writerow([step] + [round(x, 5) for x in (acc / c['log_every']).tolist()] + [tlog_last])
+            tlog_f.flush()
+            if step % (10 * c['log_every']) == 0:
+                print(f'step {step}  {tlog_last} s/1000 updates', flush=True)
             acc.zero_(); t0 = time.time()
         if step % c['eval_every'] == 0 and step < N:
             do_eval(step, c['num_evals_late'] if step > 0.9 * N else c['num_evals'], 'eval')
