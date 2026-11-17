@@ -194,7 +194,7 @@ for gname, items in ROWS:
 
 # ── per-task table (N = 10k): the same chosen runs as the main table, one column per (env, task), mean ± 95% CI over seeds ─────────────
 TASK_ROWS = [('tdmpc', 'TD-MPC (MPPI)', 'per task, ~35 min'), ('td3', 'offline TD3', 'per task, ~10 min'),
-             ('adapt_full', 'TD-MPC heads, full dataset', 'per task, ~20 s'), ('fbwm_policy', 'fbwm, policy', 'none'),
+             ('adapt_full', 'TD-MPC heads, full dataset', 'per task, ~20 s'), ('fb', 'FB', 'none'), ('fbwm_policy', 'fbwm, policy', 'none'),
              ('fbwm', 'fbwm, MPPI (ours)', 'none')]
 task_table = {'title': 'Per-task results, N = 10k labelled states',
               'protocol': ('One column per task, not averaged. Mean ± 95% CI over seeds (n = seeds) of the final evaluation of each run '
