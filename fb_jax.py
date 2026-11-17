@@ -443,13 +443,18 @@ if __name__ == '__main__':
         aux:       Optional[jnp.ndarray]
         valid_idx: jnp.ndarray
         size:      int = flax.struct.field(pytree_node=False)
+        shift:     int = flax.struct.field(pytree_node=False, default=0)
 
         @classmethod
-        def init(cls, observations, actions, trajectory_len, aux=None) -> "OfflineReplayBuffer":
+        def init(cls, observations, actions, trajectory_len, aux=None, shift=0) -> "OfflineReplayBuffer":
             n_total = (len(observations) // trajectory_len) * trajectory_len
             idx     = np.arange(n_total)
             # a transition (i, i+1) is valid iff i is not the last state of its trajectory
             valid_idx = idx[(idx % trajectory_len) != trajectory_len - 1]
+            # action_shift (2026-11-17): the action paired with (obs[i], obs[i+1]) is actions[i + shift] (default 0 = same row;
+            # +1 = next row, the ExoRL convention where a row holds the action that produced its observation; -1 = previous row)
+            if shift == -1:
+                valid_idx = valid_idx[(valid_idx % trajectory_len) != 0]
 
             return cls(
                 obs=jnp.asarray(observations[:n_total], dtype=jnp.float32),
@@ -457,6 +462,7 @@ if __name__ == '__main__':
                 aux=None if aux is None else jnp.asarray(aux[:n_total], dtype=jnp.float32),
                 valid_idx=jnp.asarray(valid_idx, dtype=jnp.int32),
                 size=len(valid_idx),
+                shift=shift,
             )
 
         def sample_indices(self, random_key, sample_size: int):
@@ -467,9 +473,10 @@ if __name__ == '__main__':
             """Returns (obs, actions, next_obs, aux)."""
             i   = self.sample_indices(random_key, sample_size)
             aux = None if self.aux is None else self.aux[i]
-            return self.obs[i], self.actions[i], self.obs[i + 1], aux
+            return self.obs[i], self.actions[i + self.shift], self.obs[i + 1], aux
 
-    replay_buffer = OfflineReplayBuffer.init(dataset_obs, dataset_actions, TRAJECTORY_LEN, aux=dataset_aux)
+    replay_buffer = OfflineReplayBuffer.init(dataset_obs, dataset_actions, TRAJECTORY_LEN, aux=dataset_aux,
+                                             shift=int(kwargs.get('action_shift', 0)))
     del dataset_obs, dataset_actions, dataset_aux
 
     # ── Neural networks ───────────────────────────────────────────────────────────
