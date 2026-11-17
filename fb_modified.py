@@ -272,9 +272,8 @@ if __name__ == '__main__':
             ), axis=-1)
             benchmarks = [
                 (walker_reward, 'stand',  0),
-                (walker_reward, 'walk',   2),
-                (walker_reward, 'vel8',   8),
-                (walker_reward, 'run',   10),
+                (walker_reward, 'walk',   1),   # speeds as in the original FB code (controllable_agent walker.py: walk 1, run 8)
+                (walker_reward, 'run',    8),
                 (walker_reward, 'flip', 'flip'),
             ]
 

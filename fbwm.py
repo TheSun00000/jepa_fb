@@ -293,9 +293,8 @@ if __name__ == '__main__':
             ), axis=-1)
             benchmarks = [
                 (walker_reward, 'stand',  0),
-                (walker_reward, 'walk',   2),
-                (walker_reward, 'vel8',   8),
-                (walker_reward, 'run',   10),
+                (walker_reward, 'walk',   1),   # speeds as in the original FB code (controllable_agent walker.py: walk 1, run 8)
+                (walker_reward, 'run',    8),
                 (walker_reward, 'flip', 'flip'),
             ]
 
@@ -436,7 +435,7 @@ if __name__ == '__main__':
     # latents h. Periodic evals use NUM_EVALS episodes per task; the final eval after the last update uses NUM_EVALS_FINAL (tag 'final').
 
     N_BENCH   = len(benchmarks)
-    NUM_EVALS = 5
+    NUM_EVALS = 10   # 10 since 2026-11-17 (was 5)
     # MPPI per-step reward (2026-11-15, approved by an independent reviewer agent): mean = g(h)^T z (as before);
     # lstsq = g(h)^T w with w = c (E[B B^T] + lam I)^-1 E[B R], the L2(rho) projection of R onto span(B), and c the factor that
     # puts z = c E[B R] on the sphere. F^T z is exactly the Q of that projected reward, so the per-step rewards and the

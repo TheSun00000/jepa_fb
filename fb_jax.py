@@ -276,9 +276,8 @@ if __name__ == '__main__':
             ), axis=-1)
             benchmarks = [
                 (walker_reward, 'stand',  0),
-                (walker_reward, 'walk',   2),
-                (walker_reward, 'vel8',   8),
-                (walker_reward, 'run',   10),
+                (walker_reward, 'walk',   1),   # speeds as in the original FB code (controllable_agent walker.py: walk 1, run 8)
+                (walker_reward, 'run',    8),
                 (walker_reward, 'flip', 'flip'),
             ]
 
@@ -405,7 +404,7 @@ if __name__ == '__main__':
                 ax.add_patch(patches.Rectangle((x, y), h, w, linewidth=2, edgecolor='gray', facecolor='gray'))
 
     N_BENCH   = len(benchmarks)
-    NUM_EVALS = 5             # episodes per task at the periodic evals (tag 'eval')
+    NUM_EVALS = 10            # episodes per task at the periodic evals (tag 'eval'); 10 since 2026-11-17 (was 5)
     Z_LABELS = int(kwargs['z_labels']) if 'z_labels' in kwargs else 10_000   # labelled states per inferred z (one fresh draw per episode)
     EVAL_CKPT = kwargs.get('eval_ckpt')   # eval only: load this checkpoint, run one eval (tag 'zlabels'), no training
     NUM_EVALS_FINAL = int(kwargs['num_evals_final']) if 'num_evals_final' in kwargs else 10   # final eval after the last update (tag 'final')
