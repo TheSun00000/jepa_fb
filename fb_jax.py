@@ -404,7 +404,8 @@ if __name__ == '__main__':
                 ax.add_patch(patches.Rectangle((x, y), h, w, linewidth=2, edgecolor='gray', facecolor='gray'))
 
     N_BENCH   = len(benchmarks)
-    NUM_EVALS = 10            # episodes per task at the periodic evals (tag 'eval'); 10 since 2026-11-17 (was 5)
+    NUM_EVALS = 5             # episodes per task at the periodic evals (tag 'eval')
+    NUM_EVALS_LATE = 10       # ... in the last 10% of training (since 2026-11-17: 5 early, 10 late, to save time)
     Z_LABELS = int(kwargs['z_labels']) if 'z_labels' in kwargs else 10_000   # labelled states per inferred z (one fresh draw per episode)
     EVAL_CKPT = kwargs.get('eval_ckpt')   # eval only: load this checkpoint, run one eval (tag 'zlabels'), no training
     NUM_EVALS_FINAL = int(kwargs['num_evals_final']) if 'num_evals_final' in kwargs else 10   # final eval after the last update (tag 'final')
@@ -418,6 +419,7 @@ if __name__ == '__main__':
         NUM_OUTER_STEPS = int(kwargs['num_outer_steps'])
     PLOT_EACH_EVALS = 5
     SAVE_EACH_STEPS = 100
+    EVAL_EACH_STEPS = max(1, round(0.05 * NUM_OUTER_STEPS))   # since 2026-11-17: every 5% of training (was a fixed 10)
     if 'eval_each_steps' in kwargs:
         EVAL_EACH_STEPS = int(kwargs['eval_each_steps'])
     # Number of benchmarks rolled out in parallel during eval (each one needs NUM_EVALS env instances)
@@ -1038,7 +1040,7 @@ if __name__ == '__main__':
 
         if (steps + 1) % EVAL_EACH_STEPS == 0:
             make_plot = (n_evals % PLOT_EACH_EVALS == 0)
-            means, stds, corrs = evaluate(train_state, num_updates, make_plot, NUM_EVALS, 'eval')
+            means, stds, corrs = evaluate(train_state, num_updates, make_plot, NUM_EVALS_LATE if steps + 1 > 0.9 * NUM_OUTER_STEPS else NUM_EVALS, 'eval')
             n_evals += 1
 
             rewards_logs = np.concatenate((rewards_logs, means.reshape(-1, 1)), axis=-1)
