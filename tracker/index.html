@@ -212,6 +212,11 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
       <div id="main-table"></div>
     </div>
     <div class="pane">
+      <header><h2><span class="hash">#</span>Results per task</h2><span class="label" id="tt-when">per-task table</span></header>
+      <p class="note" id="tt-protocol"></p>
+      <div id="task-table"></div>
+    </div>
+    <div class="pane">
       <header><h2><span class="hash">#</span>Effect of the number of labelled states</h2><span class="label" id="lc-envs">label budget</span></header>
       <div class="lg" id="lc-legend"></div>
       <div class="fig" id="lc-fig"></div>
@@ -670,6 +675,35 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     box.appendChild(el("div", { cls: "tbox" }, [t]));
   }
 
+  /* ---------- paper: per-task table (one column per task, not averaged) ---------- */
+  function renderTaskTable() {
+    var box = $("task-table"); clear(box);
+    var T = S.paper.task_table;
+    if (!T) { box.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: S.loaded.paper ? "$ task table  (not written yet)" : "$ task table …" }),
+      el("span", { text: "Written by tools/paper_tables.py (collection paper, document task_table)." })])); return; }
+    $("tt-protocol").textContent = T.protocol || "";
+    $("tt-when").textContent = T.updated ? "as of " + T.updated : "per-task table";
+    var cols = T.columns || [], envs = [];
+    cols.forEach(function (c) { if (!envs.length || envs[envs.length - 1].env !== c.env) envs.push({ env: c.env, n: 0 }); envs[envs.length - 1].n++; });
+    var t = el("table", { cls: "mt" });
+    var h1 = [el("th", { text: "method", rowspan: "2" })].concat(envs.map(function (e) { return el("th", { cls: "num", colspan: String(e.n), text: e.env }); }));
+    var h2 = cols.map(function (c) { return el("th", { cls: "num", text: c.task }); });
+    t.appendChild(el("thead", null, [el("tr", null, h1), el("tr", null, h2)]));
+    var tb = el("tbody");
+    (T.rows || []).forEach(function (r) {
+      var tds = [el("td", { text: r.label, title: r.training || "" })];
+      cols.forEach(function (c) {
+        var x = (r.cells || {})[c.env + "/" + c.task];
+        if (!x) { tds.push(el("td", { cls: "miss", text: "missing" })); return; }
+        tds.push(el("td", { cls: "cell" }, [el("span", { cls: "v", text: fmt(x.m) }), x.ci != null ? el("span", { cls: "ci", text: "±" + fmt(x.ci) }) : null,
+          el("span", { cls: "n", text: (x.n === 1 ? "1 seed" : x.n + " seeds") })]));
+      });
+      tb.appendChild(el("tr", { cls: r.ours ? "ours" : "" }, tds));
+    });
+    t.appendChild(tb);
+    box.appendChild(el("div", { cls: "tbox" }, [t]));
+  }
+
   /* ---------- paper: label-budget figure ---------- */
   var SER = { fbwm: { c: "var(--s-fbwm)", mk: "circle" }, fbwm_policy: { c: "var(--s-pol)", mk: "square" }, fb: { c: "var(--s-fb)", mk: "triangle" },
               adapt_full: { c: "var(--s-adapt)", mk: "diamond" }, adapt_labels: { c: "var(--s-adapt)", mk: "diamond", hollow: true, dash: "2 3" } };
@@ -780,7 +814,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     tbx.appendChild(el("div", { cls: "tbox" }, [t2]));
   }
 
-  function renderAll() { renderStatus(); renderMainTable(); renderLabelCurve(); renderClaims(); renderLatest(); renderRuns(); renderCompare(); renderJobs(); renderLog(); renderTodos(); }
+  function renderAll() { renderStatus(); renderMainTable(); renderTaskTable(); renderLabelCurve(); renderClaims(); renderLatest(); renderRuns(); renderCompare(); renderJobs(); renderLog(); renderTodos(); }
   renderAll();
 
   /* ---------- data ---------- */
