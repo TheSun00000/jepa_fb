@@ -451,6 +451,16 @@ if __name__ == '__main__':
     Z_COV_STATES = 100_000
     Z_LABELS = int(kwargs['z_labels']) if 'z_labels' in kwargs else 10_000   # labelled states per inferred z (one fresh draw per episode)
     EVAL_CKPT = kwargs.get('eval_ckpt')   # eval only: load this checkpoint, run one eval (tag 'zlabels'), no training
+    # oracle_heads=1 (eval_ckpt only, 2026-11-17): per task, train R(h) and Q(h, a) + pi_task(h) on the frozen fbwm encoder / dynamics with the
+    # TRUE reward on the whole dataset, then run MPPI with oracle_configs in {base, r, v, rv, rv99, pi} (see the block after the checkpoint
+    # load); results in oracle_eval.csv. oracle_tasks=vel2,flip limits the tasks. No eval_log row is written.
+    ORACLE = str(kwargs.get('oracle_heads', '0')).lower() in ('1', 'true')
+    ORACLE_TASKS   = str(kwargs['oracle_tasks']).split(',') if 'oracle_tasks' in kwargs else None
+    ORACLE_CONFIGS = str(kwargs['oracle_configs']).split(',') if 'oracle_configs' in kwargs else ['base', 'r', 'v', 'rv', 'rv99', 'pi']
+    ORACLE_R_STEPS = int(kwargs['oracle_r_steps']) if 'oracle_r_steps' in kwargs else 20_000
+    ORACLE_Q_STEPS = int(kwargs['oracle_q_steps']) if 'oracle_q_steps' in kwargs else 100_000
+    ORACLE_LR      = float(kwargs['oracle_lr']) if 'oracle_lr' in kwargs else 3e-4
+    oracle_ctx = {'on': False, 'oh': None, 'only': None, 'unit': False}   # set by the oracle driver, read by run_benchmark / rollout_batch
     print(NUM_TRAJECTORIES, TRAJECTORY_LEN, NUM_TRAJECTORIES * TRAJECTORY_LEN)
     print('Zero-shot evaluation tasks:', [b[1] for b in benchmarks])
 
@@ -480,7 +490,7 @@ if __name__ == '__main__':
     # per 200-step segment (diag_profile.csv). Then exit.
     DIAG_PROFILE = str(kwargs.get('diag_profile', '0')).lower() in ('1', 'true')
     # Number of benchmark tasks rolled out in parallel during eval (each one needs NUM_EVALS env instances)
-    EVAL_CHUNK = int(kwargs['eval_chunk']) if 'eval_chunk' in kwargs else N_BENCH
+    EVAL_CHUNK = 1 if str(kwargs.get('oracle_heads', '0')).lower() in ('1', 'true') else (int(kwargs['eval_chunk']) if 'eval_chunk' in kwargs else N_BENCH)
 
     # How the agent acts at eval time:
     #   mppi   : MPPI planning in latent space
@@ -489,7 +499,7 @@ if __name__ == '__main__':
     EVAL_MODE = str(kwargs['eval_mode']) if 'eval_mode' in kwargs else 'both'
     assert EVAL_MODE in ['mppi', 'policy', 'both'], "eval_mode must be mppi | policy | both"
     EVAL_MODES = ['mppi', 'policy'] if EVAL_MODE == 'both' else [EVAL_MODE]
-    MODE_NAMES = {'mppi': 'MPPI', 'policy': 'policy prior'}
+    MODE_NAMES = {'mppi': 'MPPI', 'policy': 'policy prior', 'pi_task': 'oracle policy'}
 
     def eval_columns(prefix):
         return [f"{prefix}mean_over_tasks"] + [f"{prefix}{label}_{s}" for _, label, _ in benchmarks for s in ("mean", "std")]
@@ -638,6 +648,24 @@ if __name__ == '__main__':
 
             h = nn.relu(TorchDense(self.hidden_dim)(h))
             return jnp.tanh(TorchDense(self.action_dim)(h))
+
+    # Oracle heads (2026-11-17, eval_ckpt=... oracle_heads=1 only; see docs/journal.md): per-task heads trained on the FROZEN fbwm
+    # encoder and dynamics with the TRUE reward of the task on the whole dataset, to test which planner ingredient limits MPPI:
+    #   R(h) (reward), Q(h, a) + pi_task(h) (TD-MPC style value; the planner's terminal value is V(h) = Q(h, pi_task(h))).
+    ORACLE_R  = MLP(hidden=(512, 512), out_dim=1)
+    ORACLE_Q  = MLP(hidden=(512, 512), out_dim=1)    # applied on concat(h, a); two independent copies (q1, q2)
+    ORACLE_PI = MLP(hidden=(512, 512), out_dim=ACTION_DIM)   # tanh outside
+
+    def oracle_r(p, h):
+        return ORACLE_R.apply({'params': p}, h)                                    # (..., 1)
+
+    def oracle_q(p, h, a):
+        x = jnp.concatenate([h, a], axis=-1)
+        return jnp.minimum(ORACLE_Q.apply({'params': p['q1']}, x), ORACLE_Q.apply({'params': p['q2']}, x))   # (..., 1)
+
+    def oracle_pi(p, h, key, std, std_clip=0.3):
+        mu = jnp.tanh(ORACLE_PI.apply({'params': p}, h))
+        return sample_truncated_normal(mu, key, std, std_clip) if std > 0 else mu
 
     def l2_normalize(x, eps=1e-8):
         """x / ||x|| along the last axis."""
@@ -1117,22 +1145,33 @@ if __name__ == '__main__':
 
         # ── MPPI planning in the latent space of phi, for a given task vector z ──────────
 
-        def _estimate_value(self, params, b_params, bh_params, f_params, pi_params, h, z, actions, key, w=None):
+        def _estimate_value(self, params, b_params, bh_params, f_params, pi_params, h, z, actions, key, w=None, oh=None, alpha=None):
             """Sum_t gamma^t r(h_{t+1})^T z / d over the horizon, r = B_hat (sepB) or g (gphi) on the imagined latent, plus the
-            bootstrapped min_i F_i(h_H, pi(h_H, z), z)^T z / d at the end. h (S,L), z (S,D), actions (H,S,A)."""
+            bootstrapped min_i F_i(h_H, pi(h_H, z), z)^T z / d at the end. h (S,L), z (S,D), actions (H,S,A).
+            oh (oracle heads, eval diagnostic, None = unchanged): 'r' replaces the per-step reward by alpha * R(h), 'q' (+ 'pi') the
+            terminal value by alpha * Q(h, pi_task(h)); alpha puts the true reward in the units of F^T z; oh['disc'] is the discount."""
             c = self.cfg
             G, discount = 0.0, 1.0
+            disc = c.discount if oh is None else oh['disc']
             for t in range(c.horizon):
                 h = self.next(params, h, actions[t])
                 if not c.mppi_terminal_only:
-                    G = G + discount * self.score(self.reward_feature(b_params, bh_params, h), z if w is None else w)   # sepB B_hat(h), gphi g(h)
-                discount = discount * c.discount
-            a = self.pi(pi_params, h, z, key, c.min_std)
-            F1, F2 = self.F(f_params, h, a, z)
-            q = jnp.minimum(self.score(F1, z), self.score(F2, z))
+                    if oh is not None and 'r' in oh:
+                        r_t = alpha * oracle_r(oh['r'], h)                                                   # true-reward head
+                    else:
+                        r_t = self.score(self.reward_feature(b_params, bh_params, h), z if w is None else w)   # sepB B_hat(h), gphi g(h)
+                    G = G + discount * r_t
+                discount = discount * disc
+            if oh is not None and 'q' in oh:
+                a = oracle_pi(oh['pi'], h, key, c.min_std)
+                q = alpha * oracle_q(oh['q'], h, a)
+            else:
+                a = self.pi(pi_params, h, z, key, c.min_std)
+                F1, F2 = self.F(f_params, h, a, z)
+                q = jnp.minimum(self.score(F1, z), self.score(F2, z))
             return (G + discount * q)[..., 0]
 
-        def _plan_single(self, ts, obs, z_task, w_task, prev_mean, use_prev, key):
+        def _plan_single(self, ts, obs, z_task, w_task, prev_mean, use_prev, key, oh=None, alpha=None):
             """MPPI for one env and one task vector. obs (obs_dim,), z_task (D,), prev_mean (H, A)."""
             c = self.cfg
             H, A = c.horizon, self.action_dim
@@ -1145,7 +1184,10 @@ if __name__ == '__main__':
             _h, _zt, pi_actions = jnp.tile(h0, (num_pi, 1)), jnp.tile(z_task, (num_pi, 1)), []
             for t in range(H):
                 key, sub = jax.random.split(key)
-                a = self.pi(pi_params, _h, _zt, sub, c.min_std)
+                if oh is not None and 'pi_mix' in oh:   # oracle policy for the policy trajectories too
+                    a = oracle_pi(oh['pi'], _h, sub, c.min_std)
+                else:
+                    a = self.pi(pi_params, _h, _zt, sub, c.min_std)
                 pi_actions.append(a)
                 _h = self.next(params, _h, a)
             pi_actions = jnp.stack(pi_actions)                                      # (H, num_pi, A)
@@ -1171,7 +1213,7 @@ if __name__ == '__main__':
                 sampled = jnp.clip(mean[:, None] + std[:, None] * noise, -1, 1)
                 actions = jnp.concatenate([sampled, pi_actions], axis=1)            # (H, S + num_pi, A)
 
-                value = jnp.nan_to_num(self._estimate_value(params, b_params, bh_params, f_params, pi_params, h, z, actions, k_val, w))
+                value = jnp.nan_to_num(self._estimate_value(params, b_params, bh_params, f_params, pi_params, h, z, actions, k_val, w, oh, alpha))
                 elite_value, elite_idx = jax.lax.top_k(value, c.num_elites)
                 elite_actions = actions[:, elite_idx]                               # (H, E, A)
 
@@ -1187,18 +1229,29 @@ if __name__ == '__main__':
             chosen = jax.random.categorical(sub, logits)
             action = elite_actions[0, chosen]
             if c.mppi_root_check:   # (a) keep the policy's action unless F at the real latent rates MPPI's first action higher
-                a_pol = self.pi(pi_params, h0[None], z_task[None], None, 0.0)[0]
-                cand  = jnp.stack([action, a_pol])                                  # (2, A)
-                F1, F2 = self.F(f_params, jnp.tile(h0, (2, 1)), cand, jnp.tile(z_task, (2, 1)))
-                qv = jnp.minimum(self.score(F1, jnp.tile(z_task, (2, 1))), self.score(F2, jnp.tile(z_task, (2, 1))))[:, 0]
+                if oh is not None and 'q' in oh:   # oracle value: the oracle policy against the oracle Q
+                    a_pol = oracle_pi(oh['pi'], h0[None], None, 0.0)[0]
+                    cand  = jnp.stack([action, a_pol])
+                    qv = (alpha * oracle_q(oh['q'], jnp.tile(h0, (2, 1)), cand))[:, 0]
+                else:
+                    a_pol = self.pi(pi_params, h0[None], z_task[None], None, 0.0)[0]
+                    cand  = jnp.stack([action, a_pol])                                  # (2, A)
+                    F1, F2 = self.F(f_params, jnp.tile(h0, (2, 1)), cand, jnp.tile(z_task, (2, 1)))
+                    qv = jnp.minimum(self.score(F1, jnp.tile(z_task, (2, 1))), self.score(F2, jnp.tile(z_task, (2, 1))))[:, 0]
                 action = jnp.where(qv[1] > qv[0], a_pol, action)
             return action, mean, spread                                             # eval mode: no exploration noise
 
         @partial(jax.jit, static_argnames=("self",))
-        def plan_batch(self, ts, obs, zs, ws, prev_mean, use_prev, key):
-            """MPPI for a batch of envs, env i conditioned on task vector zs[i] (per-step reward weights ws[i]). obs (N, obs_dim)."""
+        def plan_batch(self, ts, obs, zs, ws, prev_mean, use_prev, key, oh=None, alphas=None):
+            """MPPI for a batch of envs, env i conditioned on task vector zs[i] (per-step reward weights ws[i]). obs (N, obs_dim).
+            oh / alphas: oracle heads (one task) and the per-env scale of the true reward in F^T z units; None = unchanged."""
             keys = jax.random.split(key, obs.shape[0])
-            return jax.vmap(self._plan_single, in_axes=(None, 0, 0, 0, 0, None, 0))(ts, obs, zs, ws, prev_mean, use_prev, keys)
+            return jax.vmap(self._plan_single, in_axes=(None, 0, 0, 0, 0, None, 0, None, 0))(ts, obs, zs, ws, prev_mean, use_prev, keys, oh, alphas)
+
+        @partial(jax.jit, static_argnames=("self",))
+        def act_pi_task_batch(self, ts, obs, oh):
+            """The oracle policy pi_task(h) alone (eval diagnostic)."""
+            return oracle_pi(oh['pi'], self.encode(ts.params['encoder'], obs), None, 0.0)
 
         @partial(jax.jit, static_argnames=("self",))
         def act_policy_batch(self, ts, obs, zs):
@@ -1258,7 +1311,7 @@ if __name__ == '__main__':
     mppi_spread_log = []   # std of the final-iteration elite values at every MPPI step (reset at every eval row)
     corr_ls_log = {}       # task index -> corr of R with its least-squares fit on B (reset at every eval row)
 
-    def rollout_batch(ts, zs, random_key, mode='mppi', ws=None):
+    def rollout_batch(ts, zs, random_key, mode='mppi', ws=None, oh=None, alphas=None):
         """len(zs) envs rolled out in lock-step, env i conditioned on task vector zs[i]. One batched jitted call per step.
         mode='mppi': MPPI planning. mode='policy': the policy alone (deterministic, no planning)."""
         n = zs.shape[0]
@@ -1279,10 +1332,12 @@ if __name__ == '__main__':
 
             if mode == 'policy':
                 actions = agent.act_policy_batch(ts, jnp.asarray(obs), zs)
+            elif mode == 'pi_task':   # oracle policy alone (oracle_heads diagnostic)
+                actions = agent.act_pi_task_batch(ts, jnp.asarray(obs), oh)
             else:
                 random_key, sub = jax.random.split(random_key)
                 actions, prev_mean, spread = agent.plan_batch(ts, jnp.asarray(obs), zs, zs if ws is None else ws, prev_mean,
-                                                              jnp.asarray(step > 0), sub)
+                                                              jnp.asarray(step > 0), sub, oh, alphas)
                 elite_spreads.append(float(jnp.mean(spread)))
             states = [env_step(e, a) for e, a in zip(envs, np.asarray(actions))]
 
@@ -1336,8 +1391,10 @@ if __name__ == '__main__':
         means, stds, corrs = np.zeros(N_BENCH), np.zeros(N_BENCH), np.zeros(N_BENCH)
         for start in range(0, N_BENCH, EVAL_CHUNK):
             ids = list(range(start, min(start + EVAL_CHUNK, N_BENCH)))
+            if oracle_ctx['on'] and ids != [oracle_ctx['only']]:
+                continue   # oracle diagnostic: one task per call (its heads), the other entries of `means` stay 0
 
-            zs, ws, cs = [], [], []
+            zs, ws, cs, als = [], [], [], []
             cov_obs = replay_buffer.sample(next_eval_key(), Z_COV_STATES)[0] if Z_COV == 'dataset' else None
             for b in ids:
                 reward_fn, _, param = benchmarks[b]
@@ -1347,10 +1404,16 @@ if __name__ == '__main__':
                     z, corr = agent.infer_z(encoder_params, b_params, eval_obs, r_lab)
                     _, w, corr_ls = agent.infer_zw(encoder_params, b_params, eval_obs, r_lab, Z_RIDGE, cov_obs)
                     zs.append(z); ws.append(w); cs.append(corr); corr_ls_log.setdefault(b, []).append(float(corr_ls))
+                    if oracle_ctx['on']:
+                        # scale of the true reward in the units of F^T z: score(B, w) ~ c R / d with c = sqrt(d) / ||E[B R]||
+                        b_r = (r_lab[:, None] * agent.backward(encoder_params, b_params, eval_obs)).mean(axis=0)
+                        als.append(1.0 if oracle_ctx['unit'] else 1.0 / (math.sqrt(tdmpc_config.z_dim) * jnp.maximum(jnp.linalg.norm(b_r), 1e-8)))
             zs, ws, cs = jnp.stack(zs), jnp.stack(ws), np.asarray(jnp.stack(cs))
 
             obs_traj, aux_traj, phys_traj = rollout_batch(train_state, zs, next_eval_key(), mode,
-                                                          ws if MPPI_REWARD == 'lstsq' else None)
+                                                          ws if MPPI_REWARD == 'lstsq' else None,
+                                                          oracle_ctx['oh'] if oracle_ctx['on'] else None,
+                                                          jnp.asarray(als, dtype=jnp.float32) if oracle_ctx['on'] else None)
 
             for j, b in enumerate(ids):
                 reward_fn, label, param = benchmarks[b]
@@ -1438,6 +1501,168 @@ if __name__ == '__main__':
         restored = serialization.from_state_dict({k: getattr(train_state, k) for k in keys}, loaded)
         train_state = train_state.replace(**restored)
         print('loaded', EVAL_CKPT, '| z from', Z_LABELS, 'labelled states')
+        if ORACLE:
+            # ── Oracle-heads diagnostic (2026-11-17). Which planner ingredient limits MPPI on the fbwm latent? ──────────────────────
+            # Per task, on the FROZEN fbwm encoder and dynamics, train with the TRUE reward of the task on the whole dataset:
+            #   R(h): reward head, on real latents phi(s_k) and imagined latents (open-loop rollout with the dataset actions);
+            #   Q(h, a) + pi_task(h): TD-MPC style value (TD3 losses, targets from the real next latents; inputs real and imagined),
+            #   terminal value V(h) = Q(h, pi_task(h)). Trained for discount 0.95 (the F / planner discount) and 0.99 (TD-MPC's).
+            # Planner configurations (MPPI, same z / w / label draw per episode, mppi_reward=lstsq protocol of the checkpoint):
+            #   base : FB reward g(h)^T w and FB value F^T z (unchanged planner)
+            #   r    : per-step reward alpha R(h), FB value;         v : FB reward, terminal alpha V(h), pi_task in the terminal action
+            #   rv   : alpha R(h) and alpha V(h) (policy trajectories from pi_task too); alpha = 1/(sqrt(d)||E[B R]||) puts the true
+            #          reward in the units of F^T z, so all configurations share one MPPI temperature
+            #   rv99 : R(h) and V(h) in true units, discount 0.99, no FB component at all (the TD-MPC planner on the fbwm latent)
+            #   pi   : pi_task(h) alone, no planning (the policy that goes with V)
+            assert ENV_NAME in ('cheetah', 'walker'), 'oracle_heads: cheetah / walker only'
+            assert not tdmpc_config.mppi_init_policy, 'oracle_heads does not support mppi_init_policy'
+            rb, H_o, BS_o = replay_buffer, tdmpc_config.horizon, 1024
+            params_o = train_state.params
+            oracle_log = CSVLogger(f"{LOGS_FOLDER}/oracle_eval.csv", ["config", "task", "mean", "std", "num_evals", "eval_time"])
+            heads_log  = CSVLogger(f"{LOGS_FOLDER}/oracle_heads.csv",
+                                   ["task", "gamma", "r_steps", "q_steps", "r_loss", "r_corr_real", "r_corr_imag", "r_rmse_imag", "q_loss",
+                                    "q_mean", "q_mean_pi", "train_time"])
+            q_clip = optax.clip_by_global_norm(10.0)
+
+            def make_batch(key, rb, rew_all):
+                i = rb.seq_idx[jax.random.randint(key, (BS_o,), 0, rb.seq_size)]
+                idx = i[None, :] + jnp.arange(H_o + 1)[:, None]
+                obs, act, rew = rb.obs[idx], rb.actions[idx[:-1]], rew_all[idx]
+                h_real = agent.encode(params_o['encoder'], obs)                              # (H+1, B, L)
+                hs = [h_real[0]]
+                for k in range(H_o):
+                    hs.append(agent.next(params_o, hs[-1], act[k]))
+                return h_real, jnp.stack(hs), act, rew                                       # h_im[0] = h_real[0]
+
+            def init_heads(key):
+                k1, k2, k3, k4 = jax.random.split(key, 4)
+                h0, a0 = jnp.zeros((1, agent.latent_dim)), jnp.zeros((1, ACTION_DIM))
+                return (ORACLE_R.init(k1, h0)['params'],
+                        {'q1': ORACLE_Q.init(k2, jnp.concatenate([h0, a0], -1))['params'],
+                         'q2': ORACLE_Q.init(k3, jnp.concatenate([h0, a0], -1))['params']},
+                        ORACLE_PI.init(k4, h0)['params'])
+
+            r_opt = optax.chain(q_clip, optax.adam(ORACLE_LR))
+            q_opt = optax.chain(q_clip, optax.adam(ORACLE_LR))
+            p_opt = optax.adam(ORACLE_LR)
+
+            @jax.jit
+            def r_chunk(rp, ro, key, rb, rew_all):
+                def body(c, _):
+                    rp, ro, key = c
+                    key, kb = jax.random.split(key)
+                    h_real, h_im, _, rew = make_batch(kb, rb, rew_all)
+                    def loss(rp):
+                        return (jnp.mean((oracle_r(rp, h_real)[..., 0] - rew) ** 2)
+                                + jnp.mean((oracle_r(rp, h_im)[1:, :, 0] - rew[1:]) ** 2))
+                    l, g = jax.value_and_grad(loss)(rp)
+                    up, ro = r_opt.update(g, ro, rp)
+                    return (optax.apply_updates(rp, up), ro, key), l
+                (rp, ro, key), ls = jax.lax.scan(body, (rp, ro, key), None, length=1000)
+                return rp, ro, key, ls.mean()
+
+            def make_q_chunk(gamma):
+                @jax.jit
+                def q_chunk(c, rb, rew_all):
+                    def body(c, _):
+                        qp, qt, pp, qo, po, key = c
+                        key, kb, kn = jax.random.split(key, 3)
+                        h_real, h_im, act, rew = make_batch(kb, rb, rew_all)
+                        a_next = oracle_pi(pp, h_real[1:], kn, tdmpc_config.stddev, tdmpc_config.std_clip)
+                        y = jax.lax.stop_gradient(rew[1:] + gamma * oracle_q(qt, h_real[1:], a_next)[..., 0])      # (H, B)
+                        def q_loss(qp):
+                            def one(hin):
+                                x = jnp.concatenate([hin, act], axis=-1)
+                                q1 = ORACLE_Q.apply({'params': qp['q1']}, x)[..., 0]
+                                q2 = ORACLE_Q.apply({'params': qp['q2']}, x)[..., 0]
+                                return jnp.mean((q1 - y) ** 2 + (q2 - y) ** 2)
+                            return one(h_im[:-1]) + one(h_real[:-1])
+                        ql, qg = jax.value_and_grad(q_loss)(qp)
+                        qup, qo = q_opt.update(qg, qo, qp)
+                        qp = optax.apply_updates(qp, qup)
+                        def p_loss(pp):
+                            def one(hin):
+                                return -jnp.mean(oracle_q(qp, hin, oracle_pi(pp, hin, None, 0.0)))
+                            return one(h_im[:-1]) + one(h_real[:-1])
+                        pl, pg = jax.value_and_grad(p_loss)(pp)
+                        pup, po = p_opt.update(pg, po, pp)
+                        pp = optax.apply_updates(pp, pup)
+                        qt = jax.tree_util.tree_map(lambda t, o: t + 0.01 * (o - t), qt, qp)
+                        return (qp, qt, pp, qo, po, key), (ql, -pl)
+                    c, (ql, qpi) = jax.lax.scan(body, c, None, length=1000)
+                    return c, ql.mean(), qpi.mean()
+                return q_chunk
+
+            need_q95 = any(cf in ORACLE_CONFIGS for cf in ('v', 'rv', 'pi'))
+            need_q99 = 'rv99' in ORACLE_CONFIGS
+            need_r   = any(cf in ORACLE_CONFIGS for cf in ('r', 'rv', 'rv99'))
+            o_key = jax.random.PRNGKey(SEED + 20_000)
+            for b_i, (reward_fn, label, param) in enumerate(benchmarks):
+                if ORACLE_TASKS is not None and label not in ORACLE_TASKS:
+                    continue
+                t_task = time.time()
+                rew_all = jnp.asarray(reward_fn(rb.aux, param), dtype=jnp.float32)               # true reward of every dataset state (N,)
+                print(f'oracle heads [{label}]: reward mean {float(rew_all.mean()):.3f} max {float(rew_all.max()):.3f}', flush=True)
+                o_key, kh = jax.random.split(o_key)
+                heads = {}
+                o_key, kc = jax.random.split(o_key)
+                hr_c, hi_c, _, rew_c = make_batch(kc, rb, rew_all)                                   # held-out check batch
+                if need_r:
+                    rp = init_heads(kh)[0]
+                    ro, t0 = r_opt.init(rp), time.time()
+                    for _ in range(ORACLE_R_STEPS // 1000):
+                        rp, ro, o_key, r_l = r_chunk(rp, ro, o_key, rb, rew_all)
+                    pr_real, pr_im = np.asarray(oracle_r(rp, hr_c)[..., 0]).ravel(), np.asarray(oracle_r(rp, hi_c)[-1, :, 0])
+                    tr_real, tr_im = np.asarray(rew_c).ravel(), np.asarray(rew_c[-1])
+                    heads['r'] = rp
+                    heads_log.log({'task': label, 'gamma': '', 'r_steps': ORACLE_R_STEPS, 'q_steps': '', 'r_loss': float(r_l),
+                                   'r_corr_real': float(np.corrcoef(pr_real, tr_real)[0, 1]),
+                                   'r_corr_imag': float(np.corrcoef(pr_im, tr_im)[0, 1]),
+                                   'r_rmse_imag': float(np.sqrt(np.mean((pr_im - tr_im) ** 2))), 'q_loss': '', 'q_mean': '',
+                                   'q_mean_pi': '', 'train_time': time.time() - t0})
+                for gamma, need, name in ((0.95, need_q95, 'q95'), (0.99, need_q99, 'q99')):
+                    if not need:
+                        continue
+                    _, qp0, pp0 = init_heads(jax.random.fold_in(kh, int(gamma * 100)))
+                    carry = (qp0, jax.tree_util.tree_map(jnp.copy, qp0), pp0, q_opt.init(qp0), p_opt.init(pp0), o_key)
+                    q_chunk, t0 = make_q_chunk(gamma), time.time()
+                    for ch in range(ORACLE_Q_STEPS // 1000):
+                        carry, q_l, q_pi = q_chunk(carry, rb, rew_all)
+                        if (ch + 1) % 20 == 0:
+                            print(f'  [{label}] Q gamma={gamma} step {(ch + 1) * 1000}: q_loss {float(q_l):.4f} Q(h,pi) {float(q_pi):.2f}', flush=True)
+                    o_key = carry[5]
+                    heads[name] = {'q': carry[0], 'pi': carry[2], 'disc': gamma}
+                    heads_log.log({'task': label, 'gamma': gamma, 'r_steps': '', 'q_steps': ORACLE_Q_STEPS, 'r_loss': '', 'r_corr_real': '',
+                                   'r_corr_imag': '', 'r_rmse_imag': '', 'q_loss': float(q_l), 'q_mean': float(rew_all.mean() / (1 - gamma)),
+                                   'q_mean_pi': float(q_pi), 'train_time': time.time() - t0})
+                try:
+                    state_o = serialization.to_state_dict(jax.device_get({k: v for k, v in heads.items()}))
+                    with open(f"{MODEL_SAVE_FOLDER}/oracle_heads_{label}.pickle", 'wb') as f_o:
+                        pickle.dump(state_o, f_o)
+                except Exception as e:   # saving is a convenience only
+                    print('could not save the oracle heads:', e)
+
+                def build_oh(cfg):
+                    if cfg == 'base':  return None, False
+                    if cfg == 'r':     return {'r': heads['r'], 'disc': 0.95}, False
+                    if cfg == 'v':     return {'q': heads['q95']['q'], 'pi': heads['q95']['pi'], 'disc': 0.95}, False
+                    if cfg == 'rv':    return {'r': heads['r'], 'q': heads['q95']['q'], 'pi': heads['q95']['pi'], 'pi_mix': True, 'disc': 0.95}, False
+                    if cfg == 'rv99':  return {'r': heads['r'], 'q': heads['q99']['q'], 'pi': heads['q99']['pi'], 'pi_mix': True, 'disc': 0.99}, True
+                    if cfg == 'pi':    return {'pi': heads['q95']['pi'], 'disc': 0.95}, False
+                    raise ValueError(f'unknown oracle config {cfg}')
+
+                for cfg in ORACLE_CONFIGS:
+                    oh_c, unit = build_oh(cfg)
+                    oracle_ctx.update(on=True, oh=oh_c, only=b_i, unit=unit)
+                    t0 = time.time()
+                    m_, s_, _ = run_benchmark(train_state, 0, False, 'pi_task' if cfg == 'pi' else 'mppi', num_evals=NUM_EVALS_FINAL)
+                    oracle_log.log({'config': cfg, 'task': label, 'mean': float(m_[b_i]), 'std': float(s_[b_i]),
+                                    'num_evals': NUM_EVALS_FINAL, 'eval_time': time.time() - t0})
+                    print(f'ORACLE {label} {cfg}: {float(m_[b_i]):.1f} (std {float(s_[b_i]):.1f})', flush=True)
+                oracle_ctx['on'] = False
+                print(f'oracle [{label}] done in {time.time() - t_task:.0f}s', flush=True)
+            mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
+            sys.exit(0)
         if DIAG_F:
             # F and B on the imagined latents h_hat_t (rolled out from phi(s_0) with the dataset actions) vs on phi(s_t), t = 1..H,
             # for each task's inferred z: corr and relative RMSE of F^T z (with pi's action on each side), cos(g(h_hat_t), B(s_t)).
