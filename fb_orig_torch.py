@@ -332,7 +332,7 @@ def main():
     agent = FBAgent(c, data.obs_dim, data.action_dim, dev)
     start = 0
     if c['resume']:
-        ck = torch.load(c['resume'], map_location=dev)
+        ck = torch.load(c["resume"], map_location=dev, weights_only=False)
         agent.load(ck['agent']); start = ck['step']
         print('resumed at', start, flush=True)
 
