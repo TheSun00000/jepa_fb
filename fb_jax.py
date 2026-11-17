@@ -297,6 +297,10 @@ if __name__ == '__main__':
         dataset_actions = np.asarray(dataset['actions']).reshape(-1, ACTION_DIM)
         dataset_aux     = np.asarray(aux).reshape(dataset_obs.shape[0], -1)
         del dataset, aux
+        if 'num_trajectories' in kwargs:   # 2026-11-18: the paper's replay buffer is 5e6 transitions = the first 5000 of the 10000 RND episodes
+            n_keep = int(kwargs['num_trajectories']) * TRAJECTORY_LEN
+            dataset_obs, dataset_actions, dataset_aux = dataset_obs[:n_keep], dataset_actions[:n_keep], dataset_aux[:n_keep]
+            print('using the first', kwargs['num_trajectories'], 'trajectories:', len(dataset_obs), 'transitions')
 
         EVAL_STEPS = 1000
 
@@ -408,11 +412,12 @@ if __name__ == '__main__':
     #                   (ForwardMap.phi_layers default 2, never overridden); the original has none.
     #   ortho_init=1  : orthogonal init (gain 1) and zero bias for every Linear of F / B / actor (utils.weight_init in the original);
     #                   before, torch's default init U(-1/sqrt(fan_in), 1/sqrt(fan_in)).
-    #   q_loss=0      : no Q loss (the original's default is q_loss=False); before, q_loss on with coefficient 0.01.
-    # phi_layers=2 ortho_init=0 q_loss=1 give back the previous behaviour.
+    # (q_loss: the release's code default is off, but the paper's pseudo-code (appendix L) has it, divided by z_dim, so it stays ON by default;
+    #  q_loss_coef=0.02 is the paper's 1/d for z_dim 50. Corrected 2026-11-18, an earlier version of this comment said off.)
+    # phi_layers=2 ortho_init=0 give back the previous behaviour.
     PHI_LAYERS = int(kwargs.get('phi_layers', 0))
     ORTHO_INIT = int(kwargs.get('ortho_init', 1))
-    Q_LOSS     = int(kwargs.get('q_loss', 0))
+    Q_LOSS     = int(kwargs.get('q_loss', 1))
     N_BENCH   = len(benchmarks)
     NUM_EVALS = 5             # episodes per task at the periodic evals (tag 'eval')
     NUM_EVALS_LATE = 10       # ... in the last 10% of training (since 2026-11-17: 5 early, 10 late, to save time)
@@ -867,6 +872,8 @@ if __name__ == '__main__':
             return ts, metrics
 
     fb_config = FBConfig(batch_size=BATCH_SIZE, q_loss=bool(Q_LOSS))
+    if 'q_loss_coef' in kwargs:   # paper: 1/z_dim
+        fb_config = dataclasses.replace(fb_config, q_loss_coef=float(kwargs['q_loss_coef']))
     if 'discount' in kwargs:
         fb_config = dataclasses.replace(fb_config, discount=float(kwargs['discount']))
     if 'z_dim' in kwargs:   # size of B, F's output and z (default 50)
