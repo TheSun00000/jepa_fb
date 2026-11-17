@@ -407,6 +407,10 @@ if __name__ == '__main__':
     NUM_EVALS = 5             # episodes per task at the periodic evals (tag 'eval')
     NUM_EVALS_LATE = 10       # ... in the last 10% of training (since 2026-11-17: 5 early, 10 late, to save time)
     Z_LABELS = int(kwargs['z_labels']) if 'z_labels' in kwargs else 10_000   # labelled states per inferred z (one fresh draw per episode)
+    # label_align=1 (2026-11-17): infer z from B(next_obs) paired with aux[i]. The cheetah aux files hold the reward features of the NEXT state
+    # (aux[i] = features of physics row i+1), so the default pairing B(obs[i]) <-> aux[i] has a one-step lag; the original FB pairs B(next_obs)
+    # with the reward of next_obs. Only the z inference of the evaluation changes.
+    LABEL_ALIGN = int(kwargs.get('label_align', 0))
     EVAL_CKPT = kwargs.get('eval_ckpt')   # eval only: load this checkpoint, run one eval (tag 'zlabels'), no training
     NUM_EVALS_FINAL = int(kwargs['num_evals_final']) if 'num_evals_final' in kwargs else 10   # final eval after the last update (tag 'final')
     print(NUM_TRAJECTORIES, TRAJECTORY_LEN, NUM_TRAJECTORIES * TRAJECTORY_LEN)
@@ -956,7 +960,9 @@ if __name__ == '__main__':
             for b in ids:
                 reward_fn, _, param = benchmarks[b]
                 for _ in range(num_evals):
-                    eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
+                    eval_obs, _, eval_next_obs, eval_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
+                    if LABEL_ALIGN:
+                        eval_obs = eval_next_obs
                     z, corr = agent.infer_z(backward_params, eval_obs, reward_fn(eval_aux, param))
                     zs.append(z); cs.append(corr)
             zs, cs = jnp.stack(zs), np.asarray(jnp.stack(cs))
