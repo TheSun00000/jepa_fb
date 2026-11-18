@@ -209,3 +209,25 @@ Final evals, 10 episodes per task (vel2 / vel2Back / vel10 / vel10Back, mean of 
 - Only the mean-vs-min of the twin F's moves flip (about 640 to about 200); this explains the flip gain of the TD-JEPA port.
 - On the four velocity tasks all variants lie in 417-550 with seed spread about 100: no single change gives a clear gain. Shared F embeddings is the only one clearly lower (417).
 - `single_z` and `label_align` are evaluation-only and were not tested here.
+
+### 2026-11-18: add-one experiment, original FB + one TD-JEPA change (cheetah, 2M updates, 1 seed)
+
+`fb_tdjepa.py` with every switch at the original FB (no left encoder, min of the two F's, shared F embeddings, original orthonormality loss, mixing goals from obs, Q loss 0.02, tau 0.01, B hidden 526, a new z per episode); one change added per run. Final eval, 10 episodes: vel2 / vel2Back / vel10 / vel10Back / flip, then mean of the four velocity tasks, and mean +- std over the 6 periodic evals of the last 25% (1.5M-2M).
+
+| added change | final tasks (flip) | mean4 final | mean4 last 25% (std) | flip last 25% (std) |
+|---|---|---|---|---|
+| none (original reference) | 731 / 813 / 243 / 199 (252) | 496 | 435 (48) | 313 (43) |
+| left encoder | 954 / 479 / 310 / 215 (278) | 489 | 539 (26) | 261 (17) |
+| mean of the two F's | 740 / 686 / 326 / 173 (482) | 481 | 474 (70) | 284 (143) |
+| independent F's | 133 / 34 / 28 / 7 (169) | 50 | 64 (30) | 263 (134) |
+| halved orthonormality loss | 607 / 715 / 178 / 141 (229) | 410 | 478 (55) | 154 (62) |
+| mixing goals from next_obs | 666 / 948 / 223 / 260 (200) | 524 | 517 (41) | 248 (76) |
+| no Q loss | 815 / 884 / 313 / 216 (117) | 557 | 445 (76) | 197 (87) |
+| tau 0.001 | 739 / 950 / 185 / 232 (243) | 526 | 571 (42) | 420 (76) |
+| B hidden 256 | 885 / 974 / 285 / 244 (148) | 597 | 583 (39) | 126 (77) |
+| one z per task (single_z) | 499 / 867 / 180 / 173 (310) | 429 | 443 (65) | 314 (85) |
+
+- The original behaviour inside the TD-JEPA code reaches 496, in line with the paper's 513: the port itself is not what makes TD-JEPA's number higher.
+- Independent F's alone collapse (50): they only work together with the other changes (the leave-one-out run reverting them lowered the velocity tasks only to 417, so they interact with something else).
+- Largest single gains on the velocity tasks (last 25%): B hidden 256 (583), tau 0.001 (571), left encoder (539), mixing goals from next_obs (517). Flip is highest with tau 0.001 (420 vs 313).
+- 1 seed per run and seed spread about 100: only the collapse of the independent F's is clearly outside the noise.
