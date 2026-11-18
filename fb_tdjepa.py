@@ -428,6 +428,14 @@ if __name__ == '__main__':
     # with the reward of next_obs. Only the z inference of the evaluation changes.
     LABEL_ALIGN = int(kwargs.get('label_align', 1))   # fb_tdjepa: z from B(next_obs) and the reward of the next state, as in TD-JEPA
     SINGLE_Z    = int(kwargs.get('single_z', 1))      # fb_tdjepa: ONE z per task and eval, shared by all its episodes (TD-JEPA's DMCRewardEvaluation)
+    # leave-one-out switches (2026-11-18): each reverts ONE TD-JEPA change to the original FB behaviour (all default to the TD-JEPA behaviour)
+    LEFT_ENC     = int(kwargs.get('left_enc', 1))        # 0: F and the actor read the raw observation (no left encoder)
+    TARGET_MIN   = int(kwargs.get('target_min', 0))      # 1: min of the two F's for the target and the actor (original), not the mean
+    SHARED_TRUNK = int(kwargs.get('shared_trunk', 0))    # 1: the two F's share their embeddings, only the heads differ (original ForwardMap)
+    ORTHO_ORIG   = int(kwargs.get('ortho_orig', 0))      # 1: orthonormality as the original: -2 mean(diag) + mean(offdiag^2) (twice TD-JEPA's)
+    MIX_OBS      = int(kwargs.get('mix_obs', 0))         # 1: mixing goals are B(obs[perm]) (original), not B(next_obs[perm])
+    Q_LOSS       = int(kwargs.get('q_loss', 0))          # 1: add the original's Q loss (implicit reward), weight q_loss_coef
+    Q_LOSS_COEF  = float(kwargs.get('q_loss_coef', 0.02))
     EVAL_CKPT = kwargs.get('eval_ckpt')   # eval only: load this checkpoint, run one eval (tag 'zlabels'), no training
     NUM_EVALS_FINAL = int(kwargs['num_evals_final']) if 'num_evals_final' in kwargs else 10   # final eval after the last update (tag 'final')
     print(NUM_TRAJECTORIES, TRAJECTORY_LEN, NUM_TRAJECTORIES * TRAJECTORY_LEN)
@@ -680,6 +688,8 @@ if __name__ == '__main__':
 
         @nn.compact
         def __call__(self, obs):
+            if not LEFT_ENC:
+                return obs
             return math.sqrt(self.dim) * normalize(TorchDense(self.dim)(obs))
 
     class ForwardNet(nn.Module):
@@ -705,6 +715,17 @@ if __name__ == '__main__':
 
         @nn.compact
         def __call__(self, obs, z, action):
+            if SHARED_TRUNK:
+                g = math.sqrt(2.0)
+                def embed(x):
+                    x = NTanh()(TorchDense(self.hidden_dim, gain=g)(x))
+                    return nn.relu(TorchDense(self.hidden_dim // 2, gain=g)(x))
+                ez  = embed(jnp.concatenate([obs, z], axis=-1))
+                esa = embed(jnp.concatenate([obs, action], axis=-1))
+                h = jnp.concatenate([esa, ez], axis=-1)
+                def head(h):
+                    return TorchDense(self.z_dim, gain=g)(nn.relu(TorchDense(self.hidden_dim, gain=g)(h)))
+                return head(h), head(h)
             return (ForwardNet(self.hidden_dim, self.z_dim)(obs, z, action),
                     ForwardNet(self.hidden_dim, self.z_dim)(obs, z, action))
 
@@ -740,11 +761,11 @@ if __name__ == '__main__':
             cfg = self.cfg
             random_key, kl, kf, kb, ka = jax.random.split(random_key, 5)
             obs    = jnp.zeros((1, self.obs_dim))
-            le     = jnp.zeros((1, cfg.left_dim))
+            le     = jnp.zeros((1, cfg.left_dim if LEFT_ENC else self.obs_dim))
             action = jnp.zeros((1, self.action_dim))
             z      = jnp.zeros((1, cfg.z_dim))
             fb_params = {
-                'left':     self.left_net.init(kl, obs)['params'],
+                'left':     self.left_net.init(kl, obs).get('params', {}),
                 'forward':  self.forward_net.init(kf, le, z, action)['params'],
                 'backward': self.backward_net.init(kb, obs)['params'],
             }
@@ -798,7 +819,7 @@ if __name__ == '__main__':
             # z: random on the sphere, with a fraction p_goal replaced by B(next_obs of shuffled samples)
             z = self.sample_z(k_z, bs)
             perm  = jax.random.permutation(k_perm, bs)
-            mix_z = jax.lax.stop_gradient(self.backward_net.apply({'params': ts.fb_params['backward']}, next_obs[perm]))
+            mix_z = jax.lax.stop_gradient(self.backward_net.apply({'params': ts.fb_params['backward']}, (obs if MIX_OBS else next_obs)[perm]))
             z = jnp.where(jax.random.uniform(k_mix, (bs, 1)) < cfg.mix_ratio, mix_z, z)
 
             off_diag = 1.0 - jnp.eye(bs)
@@ -810,7 +831,10 @@ if __name__ == '__main__':
             next_action = jax.lax.stop_gradient(sample_truncated_normal(next_mu, k_next, cfg.stddev, cfg.stddev_clip))
             tF1, tF2 = self.forward_net.apply({'params': tp['forward']}, next_le_t, z, next_action)
             target_B = self.backward_net.apply({'params': tp['backward']}, next_obs)
-            target_M = jax.lax.stop_gradient(0.5 * (tF1 @ target_B.T + tF2 @ target_B.T))
+            if TARGET_MIN:
+                target_M = jax.lax.stop_gradient(jnp.minimum(tF1 @ target_B.T, tF2 @ target_B.T))
+            else:
+                target_M = jax.lax.stop_gradient(0.5 * (tF1 @ target_B.T + tF2 @ target_B.T))
 
             def fb_loss_fn(params):
                 le = self.left_net.apply({'params': params['left']}, obs)
@@ -820,15 +844,25 @@ if __name__ == '__main__':
                 fb_offdiag = 0.5 * sum((((M - discount * target_M) ** 2) * off_diag).sum() / n_off for M in (M1, M2))
                 fb_diag    = -sum(jnp.diag(M).mean() for M in (M1, M2))
                 Cov = B @ B.T
-                orth_loss_diag    = -jnp.diag(Cov).mean()
-                orth_loss_offdiag = 0.5 * ((Cov ** 2) * off_diag).sum() / n_off
+                k_o = 2.0 if ORTHO_ORIG else 1.0
+                orth_loss_diag    = -k_o * jnp.diag(Cov).mean()
+                orth_loss_offdiag = (1.0 if ORTHO_ORIG else 0.5) * ((Cov ** 2) * off_diag).sum() / n_off
                 orth_loss = orth_loss_offdiag + orth_loss_diag
                 fb_loss = fb_offdiag + fb_diag + cfg.ortho_coef * orth_loss
+                q_loss = jnp.zeros(())
+                if Q_LOSS:
+                    next_Q = jnp.minimum((tF1 * z).sum(-1), (tF2 * z).sum(-1))
+                    B_sg = jax.lax.stop_gradient(B)
+                    inv_cov = jnp.linalg.inv(B_sg.T @ B_sg / B_sg.shape[0])
+                    implicit_reward = ((B_sg @ inv_cov) * z).sum(axis=-1)
+                    target_Q = jax.lax.stop_gradient(implicit_reward + discount * next_Q)
+                    q_loss = jnp.mean(((F1 * z).sum(-1) - target_Q) ** 2) + jnp.mean(((F2 * z).sum(-1) - target_Q) ** 2)
+                    fb_loss = fb_loss + Q_LOSS_COEF * q_loss
                 eye_diff = B.T @ B / B.shape[0] - jnp.eye(B.shape[1])
                 metrics = {
                     'target_M': target_M.mean(), 'M1': M1.mean(), 'F1': F1.mean(), 'B': B.mean(),
                     'B_norm': jnp.linalg.norm(B, axis=-1).mean(), 'z_norm': jnp.linalg.norm(z, axis=-1).mean(),
-                    'fb_loss': fb_loss, 'fb_diag': fb_diag, 'fb_offdiag': fb_offdiag, 'q_loss': jnp.zeros(()),
+                    'fb_loss': fb_loss, 'fb_diag': fb_diag, 'fb_offdiag': fb_offdiag, 'q_loss': q_loss,
                     'orth_loss': orth_loss, 'orth_loss_diag': orth_loss_diag, 'orth_loss_offdiag': orth_loss_offdiag,
                     'orth_linf': jnp.max(jnp.abs(eye_diff)), 'orth_l2': jnp.linalg.norm(eye_diff) / math.sqrt(B.shape[1]),
                 }
@@ -845,7 +879,7 @@ if __name__ == '__main__':
                 mu = self.actor_net.apply({'params': actor_params}, le, z)
                 a  = sample_truncated_normal(mu, k_act, cfg.stddev, cfg.stddev_clip)
                 F1, F2 = self.forward_net.apply({'params': fb_params['forward']}, le, z, a)
-                Q = 0.5 * ((F1 * z).sum(-1) + (F2 * z).sum(-1))
+                Q = jnp.minimum((F1 * z).sum(-1), (F2 * z).sum(-1)) if TARGET_MIN else 0.5 * ((F1 * z).sum(-1) + (F2 * z).sum(-1))
                 return -Q.mean(), {'actor_loss': -Q.mean(), 'q': Q.mean()}
 
             (_, actor_metrics), actor_grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(ts.actor_params)
@@ -869,7 +903,7 @@ if __name__ == '__main__':
     fb_config = FBConfig(batch_size=BATCH_SIZE)
     for key, field, cast in (('discount', 'discount', float), ('z_dim', 'z_dim', int), ('lr_f', 'lr_f', float), ('lr_b', 'lr_b', float),
                              ('lr_actor', 'lr_actor', float), ('ortho_coef', 'ortho_coef', float), ('f_tau', 'f_target_tau', float),
-                             ('b_tau', 'b_target_tau', float), ('mix_ratio', 'mix_ratio', float)):
+                             ('b_tau', 'b_target_tau', float), ('mix_ratio', 'mix_ratio', float), ('b_hidden', 'b_hidden_dim', int)):
         if key in kwargs:
             fb_config = dataclasses.replace(fb_config, **{field: cast(kwargs[key])})
     if 'tau' in kwargs:   # both target coefficients at once
@@ -877,7 +911,7 @@ if __name__ == '__main__':
     print(fb_config)
     with open(f'{LOGS_FOLDER}/info.txt', 'a') as file:
         file.write(str(fb_config) + '\n')
-        file.write(f'fb_tdjepa: label_align={LABEL_ALIGN} single_z={SINGLE_Z} ortho_init={ORTHO_INIT}\n')
+        file.write(f'fb_tdjepa: label_align={LABEL_ALIGN} single_z={SINGLE_Z} ortho_init={ORTHO_INIT} left_enc={LEFT_ENC} target_min={TARGET_MIN} shared_trunk={SHARED_TRUNK} ortho_orig={ORTHO_ORIG} mix_obs={MIX_OBS} q_loss={Q_LOSS}\n')
 
     agent = FBAgent(fb_config, obs_dim=STATE_DIM, action_dim=ACTION_DIM)
 
