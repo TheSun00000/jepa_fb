@@ -88,6 +88,13 @@ if __name__ == '__main__':
     assert kwargs.get('variant') in ('sepB', 'gphi'), "variant=sepB or variant=gphi is required"
     VARIANT = kwargs['variant']
     assert not (PHI_IDENTITY and VARIANT == 'sepB'), "phi_identity is a gphi option"
+    # wm_ckpt=<wm_final.pickle of tdmpc_adapt.py mode=pretrain> freeze_wm=true (gphi only; 2026-11-18): phi (the TD-MPC MLP encoder, ELU, on the
+    # sphere) and the dynamics are loaded from a reward-free JEPA world model and never updated (no consistency, no FB gradient into them).
+    # Only g (B = g(phi)), F and pi train, with the FB loss (+ bcons on g). Sizes must match the checkpoint (latent_dim 50, enc_dim 256, mlp_dim 512).
+    WM_CKPT   = kwargs.get('wm_ckpt')
+    FREEZE_WM = str(kwargs['freeze_wm']).lower() in ('1', 'true', 'yes') if 'freeze_wm' in kwargs else False
+    assert FREEZE_WM == (WM_CKPT is not None), "wm_ckpt= and freeze_wm=true go together"
+    assert not (FREEZE_WM and (PHI_IDENTITY or VARIANT != 'gphi')), "freeze_wm is a gphi option (no phi_identity)"
     # Final evaluation after the last update, with more episodes than the periodic ones (reported number of the run)
     NUM_EVALS_FINAL = int(kwargs['num_evals_final']) if 'num_evals_final' in kwargs else 10
 
@@ -95,7 +102,7 @@ if __name__ == '__main__':
     now = datetime.now()
     date_time_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
-    exp_name = f'FBWM-{VARIANT}{"-identity" if PHI_IDENTITY else ""}-{ENV_NAME}'
+    exp_name = f'FBWM-{VARIANT}{"-identity" if PHI_IDENTITY else ""}{"-frozenwm" if FREEZE_WM else ""}-{ENV_NAME}'
 
     while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
         LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
@@ -724,6 +731,7 @@ if __name__ == '__main__':
     @dataclasses.dataclass(frozen=True)
     class TDMPCFBConfig:
         variant:             str   = 'gphi'  # 'sepB' | 'gphi' (set from the required variant= flag; see the top of the script)
+        frozen_wm:           bool  = False   # gphi only. phi = TD-MPC MLP encoder + dynamics loaded from a reward-free JEPA world model, never updated (see wm_ckpt=)
         phi_identity:        bool  = False   # gphi only. True: phi(s) = s (no encoder): F, B, pi act on the raw observation; the world model predicts the next raw state
         # optimisation (FB values: lr 1e-4, batch 1024, target EMA at every update)
         lr:                  float = 1e-4
@@ -801,6 +809,8 @@ if __name__ == '__main__':
             if self.sepB:
                 assert c.latent_dim == c.z_dim, "sepB: the B-head maps the latent to B, keep latent_dim == z_dim"
                 self.encoder = MLP(hidden=(c.enc_dim, c.enc_dim), out_dim=c.latent_dim)              # phi: TD-MPC encoder
+            elif c.frozen_wm:
+                self.encoder = MLP(hidden=(c.enc_dim, c.enc_dim), out_dim=c.latent_dim)              # phi: the TD-MPC encoder of tdmpc_adapt.py
             else:
                 self.encoder = PhiMap(c.phi_hidden_dim, c.latent_dim)                               # phi: the trunk
             self.dynamics    = MLP(hidden=(c.mlp_dim, c.mlp_dim), out_dim=self.latent_dim)
@@ -1061,6 +1071,8 @@ if __name__ == '__main__':
 
             updates, optimizer_state = self.optimizer.update(grads, ts.optimizer_state, ts.params)
             params = optax.apply_updates(ts.params, updates)
+            if c.frozen_wm:                                                    # frozen world model: phi and the dynamics stay as loaded
+                params, optimizer_state = ts.params, ts.optimizer_state
             b_updates, b_optimizer_state = self.b_optimizer.update(grad_b, ts.b_optimizer_state, ts.b_params)
             b_params = optax.apply_updates(ts.b_params, b_updates)
             f_updates, f_optimizer_state = self.f_optimizer.update(grad_f, ts.f_optimizer_state, ts.f_params)
@@ -1206,7 +1218,7 @@ if __name__ == '__main__':
             h = self.encode(ts.params['encoder'], obs)
             return self.pi(ts.pi_params, h, zs, None, 0.0)
 
-    tdmpc_config = TDMPCFBConfig(variant=VARIANT, batch_size=BATCH_SIZE, horizon=HORIZON, phi_identity=PHI_IDENTITY)
+    tdmpc_config = TDMPCFBConfig(variant=VARIANT, batch_size=BATCH_SIZE, horizon=HORIZON, phi_identity=PHI_IDENTITY, frozen_wm=FREEZE_WM)
     for name in ('lr', 'discount', 'consistency_coef', 'bcons_coef', 'ortho_coef', 'b_ortho_coef', 'f_encoder_grad',
                  'b_encoder_grad', 'q_loss_coef', 'mix_ratio', 'stddev', 'tau'):
         if name in kwargs:
@@ -1236,6 +1248,16 @@ if __name__ == '__main__':
     random_key = jax.random.PRNGKey(SEED)
     random_key, init_key = jax.random.split(random_key)
     train_state = agent.init(init_key)
+    if FREEZE_WM:
+        with open(WM_CKPT, 'rb') as f:
+            wm = pickle.load(f)
+        enc = serialization.from_state_dict(train_state.params['encoder'], wm['encoder'])
+        dyn = serialization.from_state_dict(train_state.params['dynamics'], wm['dynamics'])
+        train_state = train_state.replace(
+            params={'encoder': enc, 'dynamics': dyn},
+            target_params=dict(train_state.target_params, encoder=jax.tree_util.tree_map(jnp.copy, enc)))
+        train_state = train_state.replace(optimizer_state=agent.optimizer.init(train_state.params))
+        print('loaded the frozen world model from', WM_CKPT)
     print('parameters (phi + dynamics + B + B-head + F + pi):',
           sum(x.size for x in jax.tree_util.tree_leaves(
               (train_state.params, train_state.b_params, train_state.bh_params, train_state.f_params, train_state.pi_params))))
