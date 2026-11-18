@@ -788,6 +788,8 @@ if __name__ == '__main__':
         q_loss:              bool  = True    # FB's auxiliary Q-loss
         q_loss_coef:         float = 0.01
         mix_ratio:           float = 0.5     # fraction of task vectors taken from B(random dataset state), as in FB
+        target_mean:         bool  = False   # TD-JEPA FB (2026-11-18): mean of the two F's in the FB target and the actor Q, not the min (default: min, as the original)
+        mix_next:            bool  = False   # TD-JEPA FB (2026-11-18): mixing goals are B(next_obs[perm]), not B(obs[perm])
         # policy noise in the FB target action and in the actor loss
         stddev:              float = 0.2
         std_clip:            float = 0.3
@@ -993,7 +995,7 @@ if __name__ == '__main__':
             z = self.sample_z(k_z, B)
             if c.mix_ratio > 0:
                 perm     = jax.random.permutation(k_perm, B)
-                z_data   = self.backward(ts.params['encoder'], ts.b_params, obs[0][perm])      # already on the sphere
+                z_data   = self.backward(ts.params['encoder'], ts.b_params, obs[1 if c.mix_next else 0][perm])      # already on the sphere
                 mix_mask = jax.random.uniform(k_mix, (B, 1)) < c.mix_ratio
                 z        = jnp.where(mix_mask, z_data, z)
 
@@ -1012,8 +1014,9 @@ if __name__ == '__main__':
             # FB target: target F at the target encoder's latent, with the next action of the (noisy) policy
             next_a   = self.pi(ts.pi_params, next_h, z, k_next, c.stddev)
             tF1, tF2 = self.F(ts.target_params['f'], target_h[0], next_a, z)                       # (B,D)
-            target_M = jnp.minimum(tF1 @ target_B.T, tF2 @ target_B.T)                             # (B,B)
-            next_Q   = jnp.minimum((tF1 * z).sum(-1), (tF2 * z).sum(-1))
+            comb     = (lambda a, b: 0.5 * (a + b)) if c.target_mean else jnp.minimum              # min of the twin F's (original) or their mean (TD-JEPA)
+            target_M = comb(tF1 @ target_B.T, tF2 @ target_B.T)                                    # (B,B)
+            next_Q   = comb((tF1 * z).sum(-1), (tF2 * z).sum(-1))
             rho_t    = c.rho ** jnp.arange(H, dtype=jnp.float32)
             # F-consistency targets (M1/M2): EMA F at the EMA latent of s_k, k = 1..H-1, with the dataset action a_k and the same z
             if c.fcons_coef > 0:
@@ -1117,7 +1120,7 @@ if __name__ == '__main__':
             def pi_loss_fn(pi_params):
                 a = self.pi(pi_params, h_in, z, k_pi, c.stddev)
                 F1, F2 = self.F(f_params, h_in, a, z)
-                Q = jnp.minimum((F1 * z).sum(-1), (F2 * z).sum(-1))
+                Q = (0.5 * ((F1 * z).sum(-1) + (F2 * z).sum(-1))) if c.target_mean else jnp.minimum((F1 * z).sum(-1), (F2 * z).sum(-1))
                 return -Q.mean(), Q.mean()
 
             (pi_loss, q_mean), pi_grads = jax.value_and_grad(pi_loss_fn, has_aux=True)(ts.pi_params)
@@ -1276,10 +1279,10 @@ if __name__ == '__main__':
     for name in ('iterations', 'num_samples', 'num_elites'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: int(kwargs[name])})
-    for name in ('fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
+    for name in ('fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy', 'target_mean', 'mix_next', 'q_loss'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: str(kwargs[name]).lower() in ('1', 'true')})
-    for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'hidden_dim', 'feature_dim', 'mlp_dim'):
+    for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'hidden_dim', 'feature_dim', 'mlp_dim', 'backward_hidden_dim'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: int(kwargs[name])})
     if VARIANT == 'sepB':
