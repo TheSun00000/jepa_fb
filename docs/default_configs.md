@@ -21,6 +21,11 @@ Status tags: **decided** (user said so), **table** (what the main table currentl
 - 500k updates by default (`NUM_OUTER_STEPS=500`) in `fb_jax.py`, `fbwm.py`, `tdmpc_jax.py`; 1M or more only with `num_outer_steps=` (1M = 1000, 2M = 2000).
 - `eval_each_steps=25` (every 25k updates) for FB and fbwm; `num_evals_final=20`; `mppi_eval_each=100` for fbwm.
 - The table score is the eval-only label sweep (z_labels 100 ... 10000) on the final checkpoint; the training-run final is the fallback.
+- **Cheetah cells (2026-11-18):** taken from the `fbwm_gphi_step:500000.pickle` / `fb_agent_step:500000.pickle` checkpoints of the 1M runs (no step-dependent
+  schedule in the code, so equivalent to a 500k run), evaluated with the same label sweep (jobs 390557-390561). fbwm MPPI 441.3 +- 70.8 / policy 400.2 +- 118.7 (3 seeds);
+  FB (corrected `fb_jax`, 10000 episodes) 304.5 +- 189.8 (**2 seeds**, a third seed is todo). Replaces the 2026-11-15 cheetah cells (403 / 355 / 308).
+  `tools/paper_tables.py` prefers these runs for cheetah (tiers `tdj` and `fb_new`). The runs live in the `jepa_fb_oracle` clone, which `tools/sync_from_hpc.sh`
+  does not read: their CSVs were copied into `hpc/logs` by hand.
 
 ## cheetah
 

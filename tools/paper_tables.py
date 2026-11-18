@@ -129,16 +129,26 @@ for folder, kw, ev in runs('2026-11-1[5-9]_*'):
     r, env, n = r[0], kw['env_name'], int(kw['z_labels'])
     if '_FB-' in folder:
         old_ckpt = any(t in kw['eval_ckpt'] for t in ('2026-11-13', '2026-11-14'))   # 1M-update walker checkpoints
+        if env == 'cheetah' and 'step:500000' in kw['eval_ckpt'] and kw.get('label_align') == 1:   # 2026-11-18: corrected fb_jax, 500k checkpoint of a 1M run, 10000 episodes
+            LATE['fb_new'].append(('fb', env, kw['seed'], n, f(r['mean_over_tasks']), folder, row_tasks(r, '', env)))
+            continue
         LATE['fb_old' if old_ckpt else 'fb'].append(('fb', env, kw['seed'], n, f(r['mean_over_tasks']), folder, row_tasks(r, '', env)))
     elif (kw.get('variant') == 'gphi' and kw.get('mppi_reward') == 'lstsq' and kw.get('z_cov') == 'dataset' and 'z_dim' not in kw
           and str(kw.get('consistency_coef')) == PAPER_CONS and 'FBWMBTD' not in folder
           and not any(k in kw for k in ('horizon', 'mppi_init_policy', 'mixture_coef', 'mppi_terminal_only', 'mppi_norm', 'z_ridge', 'num_samples', 'iterations', 'num_elites', 'temperature', 'min_std', 'momentum', 'mppi_init_std', 'diag_profile', 'diag_wm'))):
         tier = 'root' if str(kw.get('mppi_root_check')) in ('1', 'True', 'true') else 'noroot'
+        if env == 'cheetah' and 'step:500000' in kw['eval_ckpt'] and str(kw.get('target_mean')) == '1' and tier == 'root':
+            tier = 'tdj'   # 2026-11-18: fbwm with the TD-JEPA FB changes (decisions.md), 500k checkpoint of a 1M run
         LATE[tier].append(('fbwm', env, kw['seed'], n, f(r['mean_over_tasks']), folder, row_tasks(r, '', env)))
         LATE[tier].append(('fbwm_policy', env, kw['seed'], n, f(r['policy_mean_over_tasks']), folder, row_tasks(r, 'policy_', env)))
 
-for tier, note in (('root', None), ('noroot', 'MPPI without the root check'), ('fb', None)):
+TDJ_NOTE = '500k checkpoint of a 1M run, TD-JEPA FB changes (tau 0.001, discount 0.98, no Q loss, B 256, mean target, mix next, half ortho)'
+FB_NEW_NOTE = '2 seeds; corrected fb_jax (discount 0.98, Q loss 1/d, no phi MLP), 10000 episodes; 500k checkpoint of a 1M run; no planner, policy return'
+FB_NEW_ENVS = {e for (m, e, s, n, sc, fo, pt) in LATE['fb_new']}   # for these envs the new FB replaces the older sweeps and fallbacks entirely
+for tier, note in (('tdj', TDJ_NOTE), ('fb_new', FB_NEW_NOTE), ('root', None), ('noroot', 'MPPI without the root check'), ('fb', None)):
     for (m, env, seed, n, score, folder, pt) in LATE[tier]:
+        if tier in ('fb', 'fb_old') and env in FB_NEW_ENVS:
+            continue
         if (m, env, int(seed), int(n)) not in S:
             put(m, env, seed, n, score, folder, note, pt)
 
@@ -151,7 +161,7 @@ for folder, kw, ev in runs('2026-11-15_*'):
     if not fin:
         continue
     fin, seed = fin[-1], kw.get('seed', 1)
-    if '_FB-' in folder and ('fb', env, int(seed), 10000) not in S:
+    if '_FB-' in folder and env not in FB_NEW_ENVS and ('fb', env, int(seed), 10000) not in S:
         put('fb', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final (no z sweep yet)', row_tasks(fin, '', env))
     if ('FBWM-gphi' in folder and kw.get('mppi_reward') == 'lstsq' and not kw.get('fcons_coef') and str(kw.get('consistency_coef')) == PAPER_CONS
             and not any(k in kw for k in ('hidden_dim', 'mix_ratio', 'discount', 'batch_size', 'lr', 'tau', 'q_loss_coef', 'b_ortho_coef'))
@@ -161,7 +171,7 @@ for folder, kw, ev in runs('2026-11-15_*'):
 
 # last resort: the 1M-update walker FB checkpoints
 for (m, env, seed, n, score, folder, pt) in LATE['fb_old']:
-    if (m, env, int(seed), int(n)) not in S:
+    if env not in FB_NEW_ENVS and (m, env, int(seed), int(n)) not in S:
         put(m, env, seed, n, score, folder, 'FB checkpoints: 1M updates', pt)
 
 # ── main table ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -213,7 +223,7 @@ for key, label, training in TASK_ROWS:
 # ── label-budget figure: mean over envs of the per-env mean over seeds ─────────────────────────────────────────────
 SERIES = [('fbwm', 'fbwm, MPPI (ours)'), ('fbwm_policy', 'fbwm, policy'), ('fb', 'FB'),
           ('adapt_full', 'adapted, full dataset'), ('adapt_labels', 'adapted, labels only')]
-CURVE_ENVS = ['walker', 'cheetah']
+CURVE_ENVS = ['walker', 'cheetah', 'quadruped']   # quadruped added 2026-11-18 for the all / walker / cheetah / quadruped buttons of the figure
 
 
 def env_mean(key, env, n):

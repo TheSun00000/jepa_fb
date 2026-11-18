@@ -220,6 +220,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     </div>
     <div class="pane">
       <header><h2><span class="hash">#</span>Effect of the number of labelled states</h2><span class="label" id="lc-envs">label budget</span></header>
+      <div class="filters" id="lc-tabs" role="group" aria-label="environment"></div>
       <div class="lg" id="lc-legend"></div>
       <div class="fig" id="lc-fig"></div>
       <p class="note" id="lc-note"></p>
@@ -730,17 +731,38 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     if (!C) { fig.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: S.loaded.paper ? "$ label curve  (not written yet)" : "$ label curve …" }),
       el("span", { text: "Written by tools/paper_tables.py (collection paper, document label_curve)." })])); return; }
     var envs = C.envs || [];
-    $("lc-envs").textContent = "mean over " + envs.join(" + ");
+    // environment buttons: all (mean over envs) or one environment
+    var choices = ["all"].concat(envs);
+    if (choices.indexOf(S.lcEnv) < 0) S.lcEnv = "all";
+    var sel = S.lcEnv, shown = sel === "all" ? envs : [sel];
+    var ltabs = $("lc-tabs"); clear(ltabs);
+    choices.forEach(function (e) {
+      var b = el("button", { cls: "btn" + (e === sel ? " on" : ""), type: "button", "aria-pressed": e === sel ? "true" : "false", text: e });
+      b.addEventListener("click", function () { S.lcEnv = e; renderLabelCurve(); });
+      ltabs.appendChild(b);
+    });
+    $("lc-envs").textContent = sel === "all" ? "mean over " + envs.join(" + ") : sel;
     $("lc-note").textContent = C.note || "";
-    var series = (C.series || []).filter(function (s) { return s.points && s.points.length; });
-    var refs = C.refs || [];
+    var series = (C.series || []).map(function (s) {
+      var pts = (s.points || []).map(function (p) {
+        if (sel === "all") return p;
+        var v = p.per_env && p.per_env[sel];
+        return v == null ? null : { N: p.N, m: v, envs: [sel], seeds: p.seeds };
+      }).filter(Boolean);
+      return { key: s.key, label: s.label, points: pts };
+    }).filter(function (s) { return s.points.length; });
+    var refs = (C.refs || []).map(function (r) {
+      if (sel === "all") return r;
+      var v = r.per_env && r.per_env[sel];
+      return v == null ? null : { key: r.key, label: r.label, m: v, envs: [sel] };
+    }).filter(Boolean);
     var W = 760, H = 330, padL = 44, padR = 150, padT = 12, padB = 34;
     var Ns = C.Ns || [100, 300, 1000, 3000, 10000];
     var lx0 = Math.log10(Ns[0]), lx1 = Math.log10(Ns[Ns.length - 1]);
     var ymax = 100 * Math.ceil(Math.max.apply(null, [500].concat(series.map(function (s) { return Math.max.apply(null, s.points.map(function (p) { return p.m; })); }), refs.map(function (r) { return r.m; }))) / 100);
     var X = function (n) { return padL + (Math.log10(n) - lx0) / (lx1 - lx0) * (W - padL - padR); };
     var Y = function (v) { return padT + (1 - v / ymax) * (H - padT - padB); };
-    var s = svg("svg", { viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Return versus number of labelled states, mean over " + envs.join(" and ") });
+    var s = svg("svg", { viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Return versus number of labelled states, " + (sel === "all" ? "mean over " + envs.join(" and ") : sel) });
     for (var v = 0; v <= ymax; v += 100) {
       s.appendChild(svg("line", { x1: padL, x2: W - padR, y1: Y(v), y2: Y(v), stroke: "var(--line)", "stroke-width": 1 }));
       var t = svg("text", { x: padL - 6, y: Y(v) + 3, "text-anchor": "end" }); t.textContent = v; s.appendChild(t);
@@ -758,7 +780,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
       var pts = se.points.map(function (p) { return [X(p.N), Y(p.m)]; });
       if (pts.length > 1) s.appendChild(svg("polyline", { points: pts.map(function (q) { return q[0].toFixed(1) + "," + q[1].toFixed(1); }).join(" "), fill: "none", stroke: st.c, "stroke-width": 2, "stroke-linejoin": "round", "stroke-dasharray": st.dash || "" }));
       se.points.forEach(function (p) {
-        var partial = (p.envs || []).length < envs.length;
+        var partial = (p.envs || []).length < shown.length;
         s.appendChild(marker(st.mk, X(p.N), Y(p.m), st.c, st.hollow || partial));
       });
       var last = se.points[se.points.length - 1];
@@ -784,7 +806,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
       clear(tip); tip.appendChild(el("div", { cls: "k", text: "N = " + n }));
       series.forEach(function (se) {
         var p = se.points.filter(function (q) { return q.N === n; })[0];
-        tip.appendChild(el("div", { cls: "row" }, [el("span", { text: se.label }), el("span", { text: p ? fmt(p.m) + ((p.envs || []).length < envs.length ? " (" + p.envs.join("+") + " only)" : "") : "–" })]));
+        tip.appendChild(el("div", { cls: "row" }, [el("span", { text: se.label }), el("span", { text: p ? fmt(p.m) + ((p.envs || []).length < shown.length ? " (" + p.envs.join("+") + " only)" : "") : "–" })]));
       });
       refs.forEach(function (rf) { tip.appendChild(el("div", { cls: "row" }, [el("span", { cls: "k", text: rf.label + " (topline)" }), el("span", { text: fmt(rf.m) })])); });
       tip.hidden = false;
@@ -814,7 +836,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     series.forEach(function (se) {
       tb2.appendChild(el("tr", null, [el("td", { text: se.label })].concat(Ns.map(function (n) {
         var p = se.points.filter(function (q) { return q.N === n; })[0];
-        return el("td", { cls: "num" + (p && (p.envs || []).length < envs.length ? " muted" : ""), text: p ? fmt(p.m) + ((p.envs || []).length < envs.length ? " (" + p.envs.join("+") + ")" : "") : "–" });
+        return el("td", { cls: "num" + (p && (p.envs || []).length < shown.length ? " muted" : ""), text: p ? fmt(p.m) + ((p.envs || []).length < shown.length ? " (" + p.envs.join("+") + ")" : "") : "–" });
       }))));
     });
     refs.forEach(function (rf) { tb2.appendChild(el("tr", null, [el("td", { cls: "muted", text: rf.label + " (topline)" })].concat(Ns.map(function () { return el("td", { cls: "num muted", text: fmt(rf.m) }); })))); });
