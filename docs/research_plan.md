@@ -107,8 +107,8 @@ Use **our** reward-free world model (same encoder and dynamics) for all arms, so
 - Environments: cheetah, walker, quadruped, **antmaze** (none run yet), 3 seeds minimum before the main table.
 - Stretch: pixel observations (where a latent world model matters most); other exploration datasets (data-quality sensitivity); dataset size.
 
-### Later idea (user, 2026-11-14): FB as a layer on a pretrained, frozen world model  `[later]`
-Once the main results hold: start from a world model pretrained without rewards and frozen, and add only the FB part
+### FB as a layer on a pretrained, frozen world model  `[done 2026-11-18, 3 envs x 3 seeds]`
+Idea of the user (2026-11-14), run 2026-11-18 (`fbwm.py wm_ckpt= freeze_wm=true`, gphi only; decisions.md). Result: frozen FB is below joint fbwm on every env (MPPI 588 / 348 / 562 vs 622 / 441 / 587 on walker / cheetah / quadruped), but above FB on the mean over envs; label-sweep mean 360 / 442 / 479 / 485 / 499 at N = 100 .. 10k vs joint fbwm 383 / 463 / 523 / 540 / 550. The pitch "any pretrained latent world model gains zero-shot task inference for the cost of an FB head" holds with a cost of about 30 to 90 points MPPI. Original idea, kept: once the main results hold: start from a world model pretrained without rewards and frozen, and add only the FB part
 (B, F, the actor) on top of it to make it zero-shot. The pitch becomes "any pretrained latent world model gains zero-shot
 task inference for the cost of an FB head". Not now.
 
@@ -175,3 +175,4 @@ task inference for the cost of an FB head". Not now.
 - 2026-11-15: night results. lstsq planner reward + z_dim 200 give fbwm MPPI 666 on walker (3 seeds, FB 567); M1/M2 not needed; C4 label sweep updated.
 - 2026-11-15 (night): paper configuration fixed (gphi z50, consistency 2, lstsq, dataset Cov, root check); main table and label-budget figure in the tracker; handoff section for the paper draft.
 - 2026-11-15 (23:20): paper config revised to consistency 5 (consistency 2 hurts walker and cheetah); main table and figure final with 3 seeds.
+- 2026-11-18: frozen reward-free world model + gphi FB run on walker, cheetah, quadruped (3 seeds) with a label sweep; FB cheetah third seed; quadruped adaptation N sweep complete (an OOM from a captured dataset constant in `tdmpc_adapt.py` was fixed). Tables and label figure in the tracker updated.

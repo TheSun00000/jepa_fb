@@ -249,3 +249,9 @@ Final evals, 10 episodes per task (vel2 / vel2Back / vel10 / vel10Back, mean of 
 - Quadruped adaptation N sweep: first V100 (jobs 397106-397111) then A100 (399634-399639) jobs were OOM-killed (cause above). Fixed and re-run on A100 (400371-400376, 35 min): all 4 tasks x 4 N x 3 seeds, both arms. Curve pushed. Adapted full dataset 372 / 445 / 511 / 582 / 517 at N = 100 / 300 / 1k / 3k / 10k (non-monotone at 10k, not checked whether the N = 10k runs differ in settings); labels only 162 / 345 / 260 / 426 / 449.
 - Queued before shutdown: frozen-WM fbwm on quadruped, 3 seeds (jobs 405679-405681, H100); third FB cheetah seed (fixed `fb_jax`, 1M updates + label sweep from the 500k checkpoint, job 405682). The frozen quadruped runs have no label sweep yet.
 - Not done: research_plan.md status tags and changelog, tracker Log entry, claim evidence (C-claims) for the frozen result.
+
+### 2026-11-18 (late): results of the queued jobs
+- Frozen quadruped (405679-405681) MPPI / policy 562 / 552; frozen label sweep done on all 3 envs (mean 360 / 442 / 479 / 485 / 499, joint fbwm 383 / 463 / 523 / 540 / 550). Third FB cheetah seed (405682): FB cheetah 276 (3 seeds).
+- Correction of the entry above: the quadruped adaptation N = 10000 point is not an artefact of older code. Re-run with the current code gives seeds 1-3 450 / 551 / 507 (before 485 / 532 / 536); seeds 4-6 at N = 10000 give 602 / 593 / 648 and at N = 3000 592 / 599 / 625. The full-dataset adapted line is flat after N = 3k, the dip is seed noise (3 seeds, CI about 126). Figure kept on seeds 1-3 (`paper_tables.py` ignores adapt seeds above 3).
+- Tracker page republished (series colour for `fbwm_frozen`); tables and a Log entry pushed.
+
