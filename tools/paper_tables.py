@@ -169,6 +169,16 @@ for folder, kw, ev in runs('2026-11-15_*'):
         put('fbwm', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final' + ('' if str(kw.get('mppi_root_check')) in ('1', 'True') else ', no root check') + ('' if kw.get('z_cov') == 'dataset' else ', Cov(B) from the labels'), row_tasks(fin, '', env))
         put('fbwm_policy', env, seed, 10000, f(fin['policy_mean_over_tasks']), folder, 'training-run final', row_tasks(fin, 'policy_', env))
 
+# fbwm on a frozen reward-free world model (2026-11-18): training-run finals, N = 10k only (no label sweep yet)
+FROZEN_NOTE = 'gphi FB trained on a frozen reward-free JEPA world model (the one of the adaptation baselines); 500k updates'
+for folder, kw, ev in runs('2026-11-1[89]_*FBWM-gphi-frozenwm-*'):
+    env = kw.get('env_name')
+    fin = [x for x in ev if x.get('tag') == 'final']
+    if env in TASKS and fin and str(kw.get('freeze_wm')) == 'true' and str(kw.get('num_evals_final')) == '20':
+        fin, seed = fin[-1], kw.get('seed', 1)
+        put('fbwm_frozen', env, seed, 10000, f(fin['mean_over_tasks']), folder, FROZEN_NOTE, row_tasks(fin, '', env))
+        put('fbwm_frozen_policy', env, seed, 10000, f(fin['policy_mean_over_tasks']), folder, FROZEN_NOTE, row_tasks(fin, 'policy_', env))
+
 # last resort: the 1M-update walker FB checkpoints
 for (m, env, seed, n, score, folder, pt) in LATE['fb_old']:
     if env not in FB_NEW_ENVS and (m, env, int(seed), int(n)) not in S:
@@ -181,7 +191,8 @@ ROWS = [
                                                  ('td3', 'offline TD3', 'per task, ~8 min')]),
     ('adaptation: reward-free world model + N labels', [('adapt_full', 'TD-MPC heads, full dataset', 'per task, ~20 s'),
                                                         ('adapt_labels', 'TD-MPC heads, labels only (Dyna)', 'per task, ~20 s')]),
-    ('zero-shot: no training per task', [('fb', 'FB', 'none'), ('fbwm_policy', 'fbwm, policy', 'none'), ('fbwm', 'fbwm, MPPI (ours)', 'none')]),
+    ('zero-shot: no training per task', [('fb', 'FB', 'none'), ('fbwm_policy', 'fbwm, policy', 'none'), ('fbwm', 'fbwm, MPPI (ours)', 'none'),
+                                        ('fbwm_frozen_policy', 'fbwm on a frozen world model, policy', 'none'), ('fbwm_frozen', 'fbwm on a frozen world model, MPPI', 'none')]),
 ]
 table = {'title': 'Main results, N = 10k labelled states',
          'protocol': ('Mean over the environment\'s tasks of the final evaluation (20 episodes for zero-shot methods, 10 for the toplines '
@@ -205,7 +216,8 @@ for gname, items in ROWS:
 # ── per-task table (N = 10k): the same chosen runs as the main table, one column per (env, task), mean ± 95% CI over seeds ─────────────
 TASK_ROWS = [('tdmpc', 'TD-MPC (MPPI)', 'per task, ~35 min'), ('td3', 'offline TD3', 'per task, ~10 min'),
              ('adapt_full', 'TD-MPC heads, full dataset', 'per task, ~20 s'), ('fb', 'FB', 'none'), ('fbwm_policy', 'fbwm, policy', 'none'),
-             ('fbwm', 'fbwm, MPPI (ours)', 'none')]
+             ('fbwm', 'fbwm, MPPI (ours)', 'none'),
+             ('fbwm_frozen_policy', 'fbwm on a frozen world model, policy', 'none'), ('fbwm_frozen', 'fbwm on a frozen world model, MPPI', 'none')]
 task_table = {'title': 'Per-task results, N = 10k labelled states',
               'protocol': ('One column per task, not averaged. Mean ± 95% CI over seeds (n = seeds) of the final evaluation of each run '
                            '(20 episodes for zero-shot methods, 10 for the others); the runs are the ones behind the main table.'),
