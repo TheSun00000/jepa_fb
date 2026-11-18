@@ -106,7 +106,7 @@ for fam, method in (('TDMPC', 'tdmpc'), ('TD3', 'td3')):
 for fam, method in (('TDMPC-adapt', 'adapt_full'), ('TDMPC-adaptLM', 'adapt_labels')):
     per = defaultdict(dict)
     for folder, kw, ev in runs(f'2026-11-1[4-9]_*_{fam}-*'):   # 11-18: quadruped N sweep (N = 100..3000)
-        if str(kw.get('adapt_steps')) != '6000':
+        if str(kw.get('adapt_steps')) != '6000' or int(kw.get('seed', 1)) > 3:   # seeds 4-6: quadruped N = 3000 / 10000 repeat (2026-11-18), analysed separately
             continue
         if fam == 'TDMPC-adapt' and kw.get('q_data') not in (None, 'dataset'):
             continue
