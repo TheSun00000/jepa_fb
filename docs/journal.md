@@ -171,3 +171,22 @@ Dated session notes, newest last.
 - Queued to find which correction matters: `phi_layers=2`, `discount=0.99`, `num_trajectories=10000`, each against the paper config (jobs 361799-361804, 2 seeds).
 - Also: `fb_orig_torch.py` (minimal PyTorch port of the original agent, 22 s per 1000 updates on a laptop GPU, 11 s on A100; first jobs 359185 too slow because of host syncs, fixed in 359633; resume job 360762 queued with `--dependency=afterany:359633`), `fb_tdjepa.py` (JAX port of TD-JEPA's FB: left encoder, independent twin F, B 2x256, tau 0.001, mean of the twins, no Q loss, halved orthonormality loss, one z per task) and `docs/td_jepa_fb_notes.md`.
 - Running: `fb_jax` with `tau=0.001`, 2M steps (361629/361630) and `fb_tdjepa.py`, 2M steps (361631/361632), H100 dev, 2h limit.
+
+### 2026-11-18 (morning): overnight cheetah FB results
+
+Final evals, 10 episodes per task (vel2 / vel2Back / vel10 / vel10Back, mean of the four). FB paper: 827 / 793 / 247 / 185, mean 513. TD-JEPA reports 663 (cheetah average over its tasks).
+
+| run (2 seeds) | s1 | s2 |
+|---|---|---|
+| paper config, 1M (discount 0.98, 5000 episodes, no phi MLP, Q loss 0.02) | 562 | 438 |
+| same, ortho_init=0 | 433 | 568 |
+| paper config, tau 0.001, 2M | 531 | 562 |
+| `fb_tdjepa.py` (TD-JEPA port), 2M | 525 | 537 |
+| ablation: phi_layers=2 | 533 | 266 |
+| ablation: discount 0.99 | 340 | 482 |
+| ablation: 10000 episodes | 536 | 378 |
+
+- The paper config reproduces the paper (about 500 +- 60 across seeds and variants). The two 2M runs (tau 0.001, TD-JEPA port) land at 525-562, not clearly above the 1M runs; seed noise (about 100) is as large as any gap between variants.
+- Ablations point the same way but are not conclusive with 2 seeds: phi_layers=2 (mean 400), discount 0.99 (411) and 10k episodes (457) are all below the paper config (500). The phi MLP in front of F is the most plausible cause of the old gap, and flip collapses with it (62, 34).
+- The TD-JEPA port does not reach their reported 663 on the four velocity tasks; no sweep over lr_b / lambda was done.
+- Torch port (`fb_orig_torch.py`): resume job 360762 was still running when this was written.
