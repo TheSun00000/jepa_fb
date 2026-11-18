@@ -190,3 +190,22 @@ Final evals, 10 episodes per task (vel2 / vel2Back / vel10 / vel10Back, mean of 
 - Ablations point the same way but are not conclusive with 2 seeds: phi_layers=2 (mean 400), discount 0.99 (411) and 10k episodes (457) are all below the paper config (500). The phi MLP in front of F is the most plausible cause of the old gap, and flip collapses with it (62, 34).
 - The TD-JEPA port does not reach their reported 663 on the four velocity tasks; no sweep over lr_b / lambda was done.
 - Torch port (`fb_orig_torch.py`): resume job 360762 was still running when this was written.
+
+### 2026-11-18: leave-one-out of the TD-JEPA FB changes (cheetah, 1M updates, 2 seeds)
+
+`fb_tdjepa.py` as base, one change reverted to the original FB per run. Mean of vel2 / vel2Back / vel10 / vel10Back (s1 / s2, mean) and flip (s1 / s2). Folders: `*FBTD-cheetah*`, 1M, info.txt line `fb_tdjepa:`.
+
+| reverted | mean4 | flip |
+|---|---|---|
+| none (TD-JEPA reference) | 457 / 560 (509) | 666 / 619 |
+| min of the two F's (target and actor) | 535 / 516 (526) | 220 / 179 |
+| no left encoder | 596 / 442 (519) | 559 / 611 |
+| shared F embeddings | 397 / 437 (417) | 589 / 558 |
+| original orthonormality loss | 456 / 471 (464) | 594 / 614 |
+| mixing goals from obs | 460 / 502 (481) | 616 / 617 |
+| Q loss added (0.02) | 561 / 538 (550) | 545 / 516 |
+| B hidden 526 | 558 / 538 (548) | 539 / 569 |
+
+- Only the mean-vs-min of the twin F's moves flip (about 640 to about 200); this explains the flip gain of the TD-JEPA port.
+- On the four velocity tasks all variants lie in 417-550 with seed spread about 100: no single change gives a clear gain. Shared F embeddings is the only one clearly lower (417).
+- `single_z` and `label_align` are evaluation-only and were not tested here.
