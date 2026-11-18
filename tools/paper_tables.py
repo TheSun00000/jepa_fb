@@ -127,6 +127,10 @@ for folder, kw, ev in runs('2026-11-1[5-9]_*'):
     if not r:
         continue
     r, env, n = r[0], kw['env_name'], int(kw['z_labels'])
+    if str(kw.get('freeze_wm')) == 'true':   # fbwm on a frozen reward-free world model (2026-11-18)
+        LATE['frozen'].append(('fbwm_frozen', env, kw['seed'], n, f(r['mean_over_tasks']), folder, row_tasks(r, '', env)))
+        LATE['frozen'].append(('fbwm_frozen_policy', env, kw['seed'], n, f(r['policy_mean_over_tasks']), folder, row_tasks(r, 'policy_', env)))
+        continue
     if '_FB-' in folder:
         old_ckpt = any(t in kw['eval_ckpt'] for t in ('2026-11-13', '2026-11-14'))   # 1M-update walker checkpoints
         if env == 'cheetah' and 'step:500000' in kw['eval_ckpt'] and kw.get('label_align') == 1:   # 2026-11-18: corrected fb_jax, 500k checkpoint of a 1M run, 10000 episodes
@@ -145,7 +149,7 @@ for folder, kw, ev in runs('2026-11-1[5-9]_*'):
 TDJ_NOTE = '500k checkpoint of a 1M run, TD-JEPA FB changes (tau 0.001, discount 0.98, no Q loss, B 256, mean target, mix next, half ortho)'
 FB_NEW_NOTE = '2 seeds; corrected fb_jax (discount 0.98, Q loss 1/d, no phi MLP), 10000 episodes; 500k checkpoint of a 1M run; no planner, policy return'
 FB_NEW_ENVS = {e for (m, e, s, n, sc, fo, pt) in LATE['fb_new']}   # for these envs the new FB replaces the older sweeps and fallbacks entirely
-for tier, note in (('tdj', TDJ_NOTE), ('fb_new', FB_NEW_NOTE), ('root', None), ('noroot', 'MPPI without the root check'), ('fb', None)):
+for tier, note in (('frozen', 'gphi FB on a frozen reward-free JEPA world model (eval-only label sweep, 20 episodes)'), ('tdj', TDJ_NOTE), ('fb_new', FB_NEW_NOTE), ('root', None), ('noroot', 'MPPI without the root check'), ('fb', None)):
     for (m, env, seed, n, score, folder, pt) in LATE[tier]:
         if tier in ('fb', 'fb_old') and env in FB_NEW_ENVS:
             continue
@@ -234,7 +238,7 @@ for key, label, training in TASK_ROWS:
 
 # ── label-budget figure: mean over envs of the per-env mean over seeds ─────────────────────────────────────────────
 SERIES = [('fbwm', 'fbwm, MPPI (ours)'), ('fbwm_policy', 'fbwm, policy'), ('fb', 'FB'),
-          ('adapt_full', 'adapted, full dataset'), ('adapt_labels', 'adapted, labels only')]
+          ('fbwm_frozen', 'fbwm on a frozen world model, MPPI'), ('adapt_full', 'adapted, full dataset'), ('adapt_labels', 'adapted, labels only')]
 CURVE_ENVS = ['walker', 'cheetah', 'quadruped']   # quadruped added 2026-11-18 for the all / walker / cheetah / quadruped buttons of the figure
 
 

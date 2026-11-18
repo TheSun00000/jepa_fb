@@ -715,7 +715,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
 
   /* ---------- paper: label-budget figure ---------- */
   var SER = { fbwm: { c: "var(--s-fbwm)", mk: "circle" }, fbwm_policy: { c: "var(--s-pol)", mk: "square" }, fb: { c: "var(--s-fb)", mk: "triangle" },
-              adapt_full: { c: "var(--s-adapt)", mk: "diamond" }, adapt_labels: { c: "var(--s-adapt)", mk: "diamond", hollow: true, dash: "2 3" } };
+              fbwm_frozen: { c: "var(--s-fbwm)", mk: "circle", hollow: true, dash: "2 3" }, adapt_full: { c: "var(--s-adapt)", mk: "diamond" }, adapt_labels: { c: "var(--s-adapt)", mk: "diamond", hollow: true, dash: "2 3" } };
   function marker(kind, x, y, color, hollow) {
     var r = 4.5, a = hollow ? { fill: "var(--pane)", stroke: color, "stroke-width": 1.6 } : { fill: color, stroke: "var(--pane)", "stroke-width": 1.5 };
     var e;
