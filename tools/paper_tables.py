@@ -105,7 +105,7 @@ for fam, method in (('TDMPC', 'tdmpc'), ('TD3', 'td3')):
 # adaptation baselines (frozen reward-free JEPA world model, 6k Q updates): full dataset / labels only + imagined rollouts
 for fam, method in (('TDMPC-adapt', 'adapt_full'), ('TDMPC-adaptLM', 'adapt_labels')):
     per = defaultdict(dict)
-    for folder, kw, ev in runs(f'2026-11-1[45]_*_{fam}-*'):
+    for folder, kw, ev in runs(f'2026-11-1[4-9]_*_{fam}-*'):   # 11-18: quadruped N sweep (N = 100..3000)
         if str(kw.get('adapt_steps')) != '6000':
             continue
         if fam == 'TDMPC-adapt' and kw.get('q_data') not in (None, 'dataset'):
