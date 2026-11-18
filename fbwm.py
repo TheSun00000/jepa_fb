@@ -565,6 +565,7 @@ if __name__ == '__main__':
     import flax.linen as nn
 
     orth_init = nn.initializers.orthogonal()     # torch: nn.init.orthogonal_(weight), bias = 0
+    ORTHO_INIT = int(kwargs.get('ortho_init', 0))   # 1: TorchDense (F, B/g, pi, PhiMap) uses the orthogonal init as the original FB (default 0: torch's uniform init)
 
     class MLP(nn.Module):
         """TD-MPC `mlp`: Linear -> ELU -> Linear -> ELU -> Linear."""
@@ -588,8 +589,12 @@ if __name__ == '__main__':
             fan_in = x.shape[-1]
             bound  = 1.0 / math.sqrt(fan_in)
             init   = lambda key, shape, dtype=jnp.float32: jax.random.uniform(key, shape, dtype, -bound, bound)
-            kernel = self.param('kernel', init, (fan_in, self.features))
-            bias   = self.param('bias', init, (self.features,))
+            if ORTHO_INIT:   # ortho_init=1 (2026-11-18): the original FB's utils.weight_init, orthogonal weight (gain 1) and zero bias
+                kernel = self.param('kernel', nn.initializers.orthogonal(), (fan_in, self.features))
+                bias   = self.param('bias', nn.initializers.zeros, (self.features,))
+            else:
+                kernel = self.param('kernel', init, (fan_in, self.features))
+                bias   = self.param('bias', init, (self.features,))
             return x @ kernel + bias
 
     class NTanh(nn.Module):
