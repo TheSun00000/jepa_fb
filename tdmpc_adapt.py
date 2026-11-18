@@ -1021,13 +1021,16 @@ if __name__ == '__main__':
         return jax.lax.scan(lambda t, _: agent.update_value(t, rb), ts, None, length=SCAN_LENGTH)
 
     @jax.jit
-    def reward_corr(params):
+    def _reward_corr(params, rb):    # rb is an argument, not a closure: a captured dataset is compiled in as a constant (3.7 GB on quadruped, host OOM)
         """corr(learned reward, true reward) on 10k dataset transitions (mostly outside the labelled set)."""
         k = jax.random.PRNGKey(SEED + 20_000)
-        i = replay_buffer.valid_idx[jax.random.randint(k, (10_000,), 0, replay_buffer.size)]
-        h = agent.encode(params['encoder'], replay_buffer.obs[i])
-        r = agent.reward_net.apply({'params': params['reward']}, jnp.concatenate([h, replay_buffer.actions[i]], -1))[:, 0]
-        return jnp.corrcoef(r, replay_buffer.rewards[i + 1])[0, 1]
+        i = rb.valid_idx[jax.random.randint(k, (10_000,), 0, rb.size)]
+        h = agent.encode(params['encoder'], rb.obs[i])
+        r = agent.reward_net.apply({'params': params['reward']}, jnp.concatenate([h, rb.actions[i]], -1))[:, 0]
+        return jnp.corrcoef(r, rb.rewards[i + 1])[0, 1]
+
+    def reward_corr(params):
+        return _reward_corr(params, replay_buffer)
 
     def log_train(m, step):
         m = jax.device_get(m)
