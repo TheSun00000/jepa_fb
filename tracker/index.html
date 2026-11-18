@@ -759,11 +759,14 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     var W = 760, H = 330, padL = 44, padR = 150, padT = 12, padB = 34;
     var Ns = C.Ns || [100, 300, 1000, 3000, 10000];
     var lx0 = Math.log10(Ns[0]), lx1 = Math.log10(Ns[Ns.length - 1]);
-    var ymax = 100 * Math.ceil(Math.max.apply(null, [500].concat(series.map(function (s) { return Math.max.apply(null, s.points.map(function (p) { return p.m; })); }), refs.map(function (r) { return r.m; }))) / 100);
+    var allv = [].concat.apply([], series.map(function (s) { return s.points.map(function (p) { return p.m; }); })).concat(refs.map(function (r) { return r.m; }));
+    var lo = Math.min.apply(null, allv), hi = Math.max.apply(null, allv), rng = Math.max(hi - lo, 1);
+    var gstep = rng > 400 ? 100 : rng > 200 ? 50 : rng > 100 ? 25 : rng > 40 ? 10 : 5;   // the y-axis fits the data of the selected view (no forced zero)
+    var ymin = Math.floor((lo - 0.05 * rng) / gstep) * gstep, ymax = Math.ceil((hi + 0.05 * rng) / gstep) * gstep;
     var X = function (n) { return padL + (Math.log10(n) - lx0) / (lx1 - lx0) * (W - padL - padR); };
-    var Y = function (v) { return padT + (1 - v / ymax) * (H - padT - padB); };
+    var Y = function (v) { return padT + (1 - (v - ymin) / (ymax - ymin)) * (H - padT - padB); };
     var s = svg("svg", { viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Return versus number of labelled states, " + (sel === "all" ? "mean over " + envs.join(" and ") : sel) });
-    for (var v = 0; v <= ymax; v += 100) {
+    for (var v = ymin; v <= ymax + 1e-9; v += gstep) {
       s.appendChild(svg("line", { x1: padL, x2: W - padR, y1: Y(v), y2: Y(v), stroke: "var(--line)", "stroke-width": 1 }));
       var t = svg("text", { x: padL - 6, y: Y(v) + 3, "text-anchor": "end" }); t.textContent = v; s.appendChild(t);
     }
