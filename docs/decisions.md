@@ -130,3 +130,10 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - Not applied: left encoder (the trunk phi plays that role), independent twin F (collapsed alone in the add-one runs), single z per task (eval side). Not isolated: which of the changes matters. Not tested: 500k (table protocol), walker, quadruped. 3 seeds, the control's seed spread is larger than the gain.
 - All configurations per method and env are now in `docs/default_configs.md`.
 - Runs: `2026-11-18_*_FBWM-gphi-cheetah*` (job ids 380635-380637 TD-JEPA, 377243/377244/377262 control, 377239/377240/377242 four fixes, 377280-377282 four fixes at 500k).
+
+## 2026-11-18 (night): fbwm on a frozen reward-free world model (user)
+- User asked for the experiment: take the reward-free JEPA world model of the C4 adaptation baselines (`tdmpc_adapt.py mode=pretrain`, `wm_final.pickle`, same seed), freeze it, train FB on top. gphi only (sepB dropped from now on).
+- Implemented as `fbwm.py wm_ckpt=<wm_final.pickle> freeze_wm=true` (gphi, not with `phi_identity`): phi = the TD-MPC MLP encoder (ELU, 50-d, sphere) and the dynamics are loaded and never updated (no consistency loss, no FB gradient into them). g (B = g(phi)), F and pi train with the FB loss (+ bcons on g). Run folders `*_FBWM-gphi-frozenwm-<env>`.
+- Recipe: walker and quadruped use the single fbwm configuration (consistency 2, bcons 2, f_encoder_grad 1, lstsq, dataset Cov, root check, 500k updates); cheetah follows the TD-JEPA FB changes (user, same as the joint cheetah cell). `consistency_coef` has no effect when frozen.
+- Quadruped adaptation N sweep: V100 and A100 jobs were OOM-killed because `reward_corr` closed over the replay buffer (a 3.7 GB constant compiled in); the dataset is now an argument (`tdmpc_adapt.py`, no change of results). Re-run on A100 dev, 3 seeds, complete.
+- Pushing to `main` from a background worktree session was allowed by the user (2026-11-18); only the needed commits are cherry-picked onto `main` (the worktree branch has diverged tools).
