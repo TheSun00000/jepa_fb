@@ -17,7 +17,7 @@ module load cudnn/9.8.0.87-cuda
 conda activate jax_env
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
 
-CMD="python fbwm.py env_name=cheetah eval_mode=both consistency_coef=2 bcons_coef=2 f_encoder_grad=1 mppi_reward=lstsq z_cov=dataset mppi_root_check=1 eval_each_steps=25 mppi_eval_each=100 num_evals_final=20 variant=gphi freeze_wm=true seed=1 wm_ckpt=$(bash tools/find_wm.sh cheetah 1)"
+CMD="python fbwm.py env_name=cheetah eval_mode=both consistency_coef=5 bcons_coef=2 f_encoder_grad=1 tau=0.001 discount=0.98 ortho_init=1 q_loss=0 backward_hidden_dim=256 b_ortho_coef=0.5 target_mean=1 mix_next=1 mppi_reward=lstsq z_cov=dataset mppi_root_check=1 eval_each_steps=25 mppi_eval_each=100 num_evals_final=20 variant=gphi freeze_wm=true seed=1 wm_ckpt=$(bash tools/find_wm.sh cheetah 1)"
 echo "Running: $CMD"
 mkdir -p models logs
-python fbwm.py env_name=cheetah eval_mode=both consistency_coef=2 bcons_coef=2 f_encoder_grad=1 mppi_reward=lstsq z_cov=dataset mppi_root_check=1 eval_each_steps=25 mppi_eval_each=100 num_evals_final=20 variant=gphi freeze_wm=true seed=1 wm_ckpt=$(bash tools/find_wm.sh cheetah 1)
+python fbwm.py env_name=cheetah eval_mode=both consistency_coef=5 bcons_coef=2 f_encoder_grad=1 tau=0.001 discount=0.98 ortho_init=1 q_loss=0 backward_hidden_dim=256 b_ortho_coef=0.5 target_mean=1 mix_next=1 mppi_reward=lstsq z_cov=dataset mppi_root_check=1 eval_each_steps=25 mppi_eval_each=100 num_evals_final=20 variant=gphi freeze_wm=true seed=1 wm_ckpt=$(bash tools/find_wm.sh cheetah 1)
