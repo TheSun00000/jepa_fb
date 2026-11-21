@@ -38,6 +38,11 @@ Flags (key=value): model=lewm|dinowm env_name=antmaze_medium|antmaze_large|cube_
   [seed=] [train_steps=300000] [batch_size=128] [lr=1e-4] [weight_decay=1e-3] [sigreg_coef=0.09] [num_proj=1024] [embed_dim=192]
   [frameskip=5] [num_frames=4] [ckpt= (eval only)] [eval_k=10,25,50,100,200] [goal_n=50] [goal_split=val] [pair_seed=0]
   [goal_min_dist=] [goal_tol=] [cem_samples=300] [cem_topk=30] [cem_iters=30] [cem_init_std=1.0] [plan_horizon=5] [receding=5]
+  [planner=cem|mppi] [replan_every=<env steps; mppi 1, cem receding*frameskip>] (mppi, wm_goal.py's defaults:) [num_samples=512]
+  [iterations=6] [num_elites=64] [temperature=0.5] [min_std=0.05] [init_std=2.0] [momentum=0.1] [mppi_norm=true]
+planner=mppi (2026-11-22): the same-planner control. wm_goal.py's MPPI on this model's predictor and embedding, so the LeWM / DINO-WM
+latents are compared with the FBWM / JEPA-WM latents under one planner; use plan_horizon=1 (one block = 5 env steps = wm_goal.py
+horizon=5). goal_eval.csv model column: lewm-mppi / dinowm-mppi.
 Writes logs/<timestamp>_WMBASE-<model>-<env>/{info.txt, training_log.csv, goal_eval.csv, goal_episodes.csv, goal_pairs_k<K>.csv}
 and models/<same>/wm_base_final.pickle.
 """
@@ -116,10 +121,24 @@ CEM_INIT_STD = float(kwargs.get('cem_init_std', 1.0))
 PLAN_H = int(kwargs.get('plan_horizon', 5))         # in action blocks
 RECEDING = int(kwargs.get('receding', 5))           # action blocks executed before replanning
 assert 1 <= RECEDING <= PLAN_H
+PLANNER = str(kwargs.get('planner', 'cem'))         # cem (the papers') | mppi (wm_goal.py's MPPI, the same-planner control)
+assert PLANNER in ('cem', 'mppi'), 'planner=cem|mppi'
+MPPI_SAMPLES = int(kwargs.get('num_samples', 512))  # mppi: wm_goal.py's defaults
+MPPI_ITERS = int(kwargs.get('iterations', 6))
+MPPI_ELITES = int(kwargs.get('num_elites', 64))
+MPPI_TEMP = float(kwargs.get('temperature', 0.5))
+MPPI_MIN_STD = float(kwargs.get('min_std', 0.05))
+MPPI_INIT_STD = float(kwargs.get('init_std', 2.0))
+MPPI_MOMENTUM = float(kwargs.get('momentum', 0.1))
+MPPI_NORM = str(kwargs.get('mppi_norm', 'true')).lower() in ('1', 'true')
+REPLAN_EVERY = int(kwargs.get('replan_every', 1 if PLANNER == 'mppi' else RECEDING * FRAMESKIP))   # env steps between replans
+assert 1 <= REPLAN_EVERY <= PLAN_H * FRAMESKIP
+if CKPT is None and PLANNER == 'mppi':
+    print('note: planner=mppi while training; usually run it eval-only with ckpt=')
 LOG_EVERY = 1000
 
 date_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-exp_name = f"WMBASE-{MODEL}{('-' + str(kwargs['name'])) if 'name' in kwargs else ''}-{ENV_NAME}"
+exp_name = f"WMBASE-{MODEL}{'-mppi' if PLANNER == 'mppi' else ''}{('-' + str(kwargs['name'])) if 'name' in kwargs else ''}-{ENV_NAME}"
 while True:   # two jobs started in the same second get the same name: append '_'
     LOGS_FOLDER, MODEL_SAVE_FOLDER = f'./logs/{date_time_str}_{exp_name}', f'./models/{date_time_str}_{exp_name}'
     try:
@@ -296,7 +315,9 @@ config = dict(model=MODEL, env=ENV_NAME, ogb_name=ogb_name, train_steps=TRAIN_ST
               weight_decay=WEIGHT_DECAY, sigreg_coef=SIGREG_COEF if MODEL == 'lewm' else None, num_proj=NUM_PROJ, embed_dim=EMB,
               frameskip=FRAMESKIP, num_frames=NUM_FRAMES, eval_k=EVAL_K, goal_n=GOAL_N, goal_split=GOAL_SPLIT, pair_seed=PAIR_SEED,
               goal_tol=GOAL_TOL, cem_samples=CEM_SAMPLES, cem_topk=CEM_TOPK, cem_iters=CEM_ITERS, cem_init_std=CEM_INIT_STD,
-              plan_horizon=PLAN_H, receding=RECEDING, ckpt=CKPT)
+              plan_horizon=PLAN_H, receding=RECEDING, ckpt=CKPT, planner=PLANNER, replan_every=REPLAN_EVERY,
+              mppi=dict(num_samples=MPPI_SAMPLES, iterations=MPPI_ITERS, num_elites=MPPI_ELITES, temperature=MPPI_TEMP,
+                        min_std=MPPI_MIN_STD, init_std=MPPI_INIT_STD, momentum=MPPI_MOMENTUM, mppi_norm=MPPI_NORM) if PLANNER == 'mppi' else None)
 with open(f'{LOGS_FOLDER}/info.txt', 'a') as f:
     f.write(str(kwargs) + '\n')
     f.write(str(config) + '\n')
@@ -354,6 +375,40 @@ def cem_batch(params, obs_std, goal_e, key):
     return jax.vmap(cem_single, in_axes=(None, 0, 0, 0))(params, obs_std, goal_e, jax.random.split(key, obs_std.shape[0]))
 
 
+# ── MPPI (planner=mppi): wm_goal.py's plan_single on this model's predictor ──────────────────────────────────────────────────────
+# Same sampling, elites, temperature, momentum, std clipping, warm start (previous mean shifted by one ENV step) and score
+# (-L2 distance of the last predicted embedding to the goal embedding, not squared) as wm_goal.py; the plan is PLAN_H action blocks
+# (PLAN_H * FRAMESKIP env steps), so plan_horizon=1 is wm_goal.py's horizon=5. Executes the first action of the mean, replans every
+# REPLAN_EVERY env steps (1 = wm_goal.py).
+def mppi_single(params, obs_std, goal_e, prev_mean, use_prev, key):
+    T, A, S = PLAN_H * FRAMESKIP, ACTION_DIM, MPPI_SAMPLES
+    e0 = encode(params, obs_std[None])[0]
+    mean = jnp.where(use_prev, prev_mean, jnp.zeros((T, A)))
+    std = MPPI_INIT_STD * jnp.ones((T, A))
+    for _ in range(MPPI_ITERS):
+        key, k = jax.random.split(key)
+        a = jnp.clip(mean[None] + std[None] * jax.random.normal(k, (S, T, A)), -1.0, 1.0)     # (S, T, A)
+        ab = a.reshape(S, PLAN_H, ACT_BLOCK)
+        e = jnp.tile(e0, (S, 1))
+        for h in range(PLAN_H):
+            e = predict(params, e, ab[:, h])
+        value = jnp.nan_to_num(-jnp.linalg.norm(e - goal_e, axis=-1))
+        ev, ei = jax.lax.top_k(value, MPPI_ELITES)
+        ea = a[ei]                                                                             # (E, T, A)
+        spread = ev.std()
+        w = jax.nn.softmax(MPPI_TEMP * (ev - ev.max()) / ((spread + 1e-6) if MPPI_NORM else 1.0))
+        _mean = (w[:, None, None] * ea).sum(0)
+        _std = jnp.sqrt((w[:, None, None] * (ea - _mean[None]) ** 2).sum(0))
+        mean, std = MPPI_MOMENTUM * mean + (1 - MPPI_MOMENTUM) * _mean, jnp.clip(_std, MPPI_MIN_STD, 2.0)
+    return mean
+
+
+@jax.jit
+def mppi_batch(params, obs_std, goal_e, prev_mean, use_prev, key):
+    return jax.vmap(mppi_single, in_axes=(None, 0, 0, 0, None, 0))(params, obs_std, goal_e, prev_mean, use_prev,
+                                                                    jax.random.split(key, obs_std.shape[0]))
+
+
 @jax.jit
 def encode_batch(params, obs_std):
     return encode(params, obs_std)
@@ -382,16 +437,22 @@ for K in EVAL_K:
     for step in tqdm(range(budget), leave=False):
         obs = np.stack(states).astype(np.float32)
         coords.append(obs[:, g_coords])
-        if step - t_plan >= RECEDING * FRAMESKIP or seq is None:
+        if seq is None or step - t_plan >= REPLAN_EVERY:
             key, sub = jax.random.split(key)
-            mu, _ = cem_batch(params, jnp.asarray(standardise(obs)), goal_e, sub)
-            seq, t_plan = np.asarray(mu).reshape(GOAL_N, PLAN_H * FRAMESKIP, ACTION_DIM), step
+            if PLANNER == 'cem':
+                mu, _ = cem_batch(params, jnp.asarray(standardise(obs)), goal_e, sub)
+                seq = np.asarray(mu).reshape(GOAL_N, PLAN_H * FRAMESKIP, ACTION_DIM)
+            else:                                                    # warm start: the previous mean shifted by the steps executed
+                prev = np.zeros((GOAL_N, PLAN_H * FRAMESKIP, ACTION_DIM), np.float32) if seq is None else np.concatenate(
+                    [seq[:, step - t_plan:], np.zeros((GOAL_N, step - t_plan, ACTION_DIM), np.float32)], axis=1)
+                seq = np.asarray(mppi_batch(params, jnp.asarray(standardise(obs)), goal_e, jnp.asarray(prev), seq is not None, sub))
+            t_plan = step
         actions = seq[:, step - t_plan]
         states = [np.asarray(e.step(a)[0]) for e, a in zip(envs, actions)]
     final_e = encode_batch(params, jnp.asarray(standardise(np.stack(states).astype(np.float32))))
     gdist = np.linalg.norm(np.stack(coords) - P['goal_coord'][None], axis=-1).T                 # (GOAL_N, budget)
     succ = (gdist <= GOAL_TOL).any(axis=-1).astype(np.float64)
-    glog.log({'model': MODEL, 'goal_k': K, 'n': GOAL_N, 'goal_budget': budget, 'goal_tol': GOAL_TOL, 'success': float(succ.mean()),
+    glog.log({'model': MODEL + ('-mppi' if PLANNER == 'mppi' else ''), 'goal_k': K, 'n': GOAL_N, 'goal_budget': budget, 'goal_tol': GOAL_TOL, 'success': float(succ.mean()),
               'success_std': float(succ.std(ddof=1)), 'gdist_start': float(gdist[:, 0].mean()), 'gdist_end': float(gdist[:, -1].mean()),
               'gdist_min': float(gdist.min(axis=-1).mean()), 'reset_err': float(reset_err.mean()),
               'emb_dist_end': float(jnp.linalg.norm(final_e - goal_e, axis=-1).mean()), 'time': time.time() - t0})
