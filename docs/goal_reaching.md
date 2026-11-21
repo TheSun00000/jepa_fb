@@ -48,6 +48,28 @@ Seed 3 geometry (Spearman latent distance vs displacement): FBWM 0.92, JEPA 0.52
 Runs: `hpc/logs/2026-11-21_23-1*_WMGOAL-*ev_am_s3*` (checkpoints `2026-11-21_22-18-34_FBWM-gphi-antmaze_medium`,
 `2026-11-21_22-29-20_JEPAWM-antmaze_medium`).
 
+**(A') Same planner, all four latents, all envs** (successes / 50; antmaze-medium FBWM and JEPA: seeds 1 + 3 pooled, / 100). LeWM /
+DINO-WM: `wm_baselines.py planner=mppi plan_horizon=1` (one 5-step block, replan every env step, the same MPPI settings).
+
+| env | latent | K=10 | K=50 | K=200 |
+|---|---|---|---|---|
+| antmaze-medium | FBWM | **32/100** | **11/100** | 4/100 |
+| antmaze-medium | JEPA WM | 12/100 | 5/100 | 2/100 |
+| antmaze-medium | LeWM (state) | 7 | 4 | 3 |
+| antmaze-medium | DINO-WM (raw state) | 10 | 4 | 2 |
+| antmaze-large | FBWM | **13** | **4** | 0 |
+| antmaze-large | JEPA WM | 5 | 1 | 0 |
+| antmaze-large | LeWM (state) | 4 | 2 | 1 |
+| antmaze-large | DINO-WM (raw state) | 5 | 1 | 2 |
+| cube-single | FBWM | 21 | 11 | 16 |
+| cube-single | JEPA WM | 39 | 13 | 18 |
+| cube-single | LeWM (state) | **43** | 11 | 13 |
+| cube-single | DINO-WM (raw state) | 30 | 12 | 10 |
+
+Mazes: the FBWM latent is the best distance cost, 2-3x every other latent (raw state included). Cube: it is the worst at K=10, and
+the CEM-vs-MPPI gap of LeWM / DINO-WM (14 -> 43, 13 -> 30) confirms that JEPA's earlier cube lead was the planner.
+Runs: `hpc/logs/2026-11-21_23-3*_WMBASE-*-mppi-*`; all cells with `python tools/goal_results.py --runs`.
+
 **(B) Reference: published baselines with their own planner** (CEM, 25-step plans run open loop). Planner and latent both differ
 from (A), so these rows are not a test of the latent.
 
@@ -80,6 +102,8 @@ horizons hurt FBWM on near goals.
 | cube-single | JEPA WM, distance MPPI | 39 | | 13 | | 18 |
 | cube-single | FBWM, distance MPPI | 21 | | 11 | | 16 |
 | cube-single | FBWM, FB-goal actor (uses FB's value) | 7 | | 3 | | 6 |
+| antmaze-large | FBWM, FB-goal actor (FB's value) | 40 | | 19 | | 13 |
+| antmaze-large | FBWM, FB-goal MPPI init-policy + root (FB's value) | 39 | | 25 | | 3 |
 | cube-single | FBWM, FB-goal MPPI init-policy + root (FB's value) | 10 | | 5 | | 6 |
 | cube-single | DINO-WM (state), CEM | 13 | 26 | 19 | 15 | 16 |
 | cube-single | LeWM (state), CEM | 14 | 27 | 13 | 12 | 14 |
