@@ -120,7 +120,8 @@ CEM_ITERS = int(kwargs.get('cem_iters', 30))
 CEM_INIT_STD = float(kwargs.get('cem_init_std', 1.0))
 PLAN_H = int(kwargs.get('plan_horizon', 5))         # in action blocks
 RECEDING = int(kwargs.get('receding', 5))           # action blocks executed before replanning
-assert 1 <= RECEDING <= PLAN_H
+PLANNER_ = str(kwargs.get("planner", "cem"))
+assert PLANNER_ == "mppi" or 1 <= RECEDING <= PLAN_H   # receding: CEM only (mppi replans every replan_every env steps)
 PLANNER = str(kwargs.get('planner', 'cem'))         # cem (the papers') | mppi (wm_goal.py's MPPI, the same-planner control)
 assert PLANNER in ('cem', 'mppi'), 'planner=cem|mppi'
 MPPI_SAMPLES = int(kwargs.get('num_samples', 512))  # mppi: wm_goal.py's defaults
