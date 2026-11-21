@@ -54,7 +54,8 @@ def collect():
         h = kw.get('horizon', 5)
         norm = str(kw.get('mppi_norm', 'false')).lower() in ('1', 'true')
         n = int(last.get('num_evals') or 50)
-        out.append(dict(env=kw['env_name'], method=f'{src} distance MPPI H={h}{" norm" if norm else ""}', k=k,
+        plan = (f"CEM (LeWM's, replan every {kw.get('receding', h)})" if kw.get('planner') == 'cem' else 'MPPI')
+        out.append(dict(env=kw['env_name'], method=f'{src} distance {plan} H={h}{" norm" if norm and plan == "MPPI" else ""}', k=k,
                         succ=round(float(last[col]) * n), n=n, gmin=float(last.get(f'goal_k{k}_gdist_min') or 'nan'),
                         gstart=float(last.get(f'goal_k{k}_gdist_start') or 'nan'), run=os.path.basename(run), ckpt=ckpt_tag(kw.get('ckpt'))))
     for run in sorted(glob.glob(os.path.join(ROOT, '*_FBWM-*'))):

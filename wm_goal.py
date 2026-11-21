@@ -46,7 +46,8 @@ the reset - stored s_t| (mean over episodes; checks the simulator reset), and go
 
 Flags (key=value): env_name= ckpt= [phi_identity=false] [num_evals=10] [n_labels=10000] [tasks=goal_1,goal_2 (default: all)]
   [horizon=5] [iterations=6] [num_samples=512] [num_elites=64] [temperature=0.5] [min_std=0.05] [init_std=2.0] [momentum=0.1]
-  [dist=l2] [mppi_norm=false] [eval_chunk=<tasks rolled out in parallel>] [seed=] [name=<tag in the run folder name>]
+  [dist=l2] [mppi_norm=false] [planner=mppi|cem] [cem_samples=300] [cem_topk=30] [cem_iters=30] [cem_init_std=1.0]
+  [receding=horizon] [eval_chunk=<tasks rolled out in parallel>] [seed=] [name=<tag in the run folder name>]
   [dataset=explore|stitch|navigate (antmaze) | play|noisy (cube): names the env and, with goal_k > 0, the file the pairs come from]
   [ogbench_dir=] [goal_k=25 (0: official tasks)] [goal_n=50] [goal_split=val] [goal_budget=2K] [goal_tol=0.5 antmaze | 0.4 cube]
   [goal_min_dist=goal_tol] [pair_seed=0].
@@ -126,6 +127,19 @@ MOMENTUM = float(kwargs.get('momentum', 0.1))
 DIST = str(kwargs.get('dist', 'l2'))
 assert DIST in ('l2', 'cosine'), 'dist=l2|cosine'
 MPPI_NORM = flag(kwargs, 'mppi_norm')                 # softmax on elite values divided by their std (scale-free temperature)
+# planner=cem (2026-11-22): LeWM's / DINO-WM's CEM instead of MPPI, the planner swap of wm_baselines.py planner=mppi. No warm start:
+#   each plan starts from mean 0, std cem_init_std; cem_samples sequences clipped to [-1, 1], the cem_topk best by cost = SQUARED L2
+#   distance of the last imagined latent to the goal latent refit mean / std (std floor 1e-3), cem_iters iterations; the first
+#   `receding` actions of the mean are executed open loop before replanning. LeWM's setting = horizon=25 receding=25 (5 blocks of 5
+#   env steps; here the 1-step dynamics is rolled 25 times).
+PLANNER = str(kwargs.get('planner', 'mppi'))
+assert PLANNER in ('mppi', 'cem'), 'planner=mppi|cem'
+CEM_SAMPLES = int(kwargs.get('cem_samples', 300))
+CEM_TOPK = int(kwargs.get('cem_topk', 30))
+CEM_ITERS = int(kwargs.get('cem_iters', 30))
+CEM_INIT_STD = float(kwargs.get('cem_init_std', 1.0))
+RECEDING = int(kwargs.get('receding', HORIZON))
+assert 1 <= RECEDING <= HORIZON
 # diag_geom=1 (OGBench, 2026-11-22): geometry of the latent, no planning, then exit. Goal coordinates = antmaze (x, y) | cube block.
 #   probe_r2        : linear (ridge) probe phi(s) -> goal coordinates, fit on 200k train-file states, R^2 on 50k val-file states
 #   rho_dist_disp   : Spearman of ||phi(s_t) - phi(s_{t+k})|| with the real goal-coordinate displacement, 20k val pairs of one
@@ -285,6 +299,29 @@ def plan_single(params, obs, goal, prev_mean, use_prev, key):
 def plan_batch(params, obs, goals, prev_mean, use_prev, key):
     keys = jax.random.split(key, obs.shape[0])
     return jax.vmap(plan_single, in_axes=(None, 0, 0, 0, None, 0))(params, obs, goals, prev_mean, use_prev, keys)
+
+
+def cem_single(params, obs, goal, key):
+    """planner=cem: LeWM's CEM. Returns the mean action sequence (H, A)."""
+    H, A, S = HORIZON, ACTION_DIM, CEM_SAMPLES
+    h = jnp.tile(encode(params['encoder'], obs[None])[0], (S, 1))
+    mean, std = jnp.zeros((H, A)), CEM_INIT_STD * jnp.ones((H, A))
+    for _ in range(CEM_ITERS):
+        key, k = jax.random.split(key)
+        actions = jnp.clip(mean[:, None] + std[:, None] * jax.random.normal(k, (H, S, A)), -1, 1)       # (H, S, A)
+        hh = h
+        for t in range(H):
+            hh = next_latent(params, hh, actions[t])
+        cost = jnp.nan_to_num(latent_dist(hh, goal) ** 2, nan=1e9)
+        _, idx = jax.lax.top_k(-cost, CEM_TOPK)
+        el = actions[:, idx]
+        mean, std = el.mean(1), jnp.maximum(el.std(1), 1e-3)
+    return mean
+
+
+@jax.jit
+def cem_batch(params, obs, goals, key):
+    return jax.vmap(cem_single, in_axes=(None, 0, 0, 0))(params, obs, goals, jax.random.split(key, obs.shape[0]))
 
 
 @jax.jit
@@ -537,7 +574,8 @@ config = dict(goal_k=GOAL_K, goal_n=GOAL_N if GOAL_K else None, goal_split=GOAL_
               goal_budget=GOAL_BUDGET if GOAL_K else None, goal_tol=GOAL_TOL if GOAL_K else None,
               goal_min_dist=GOAL_MIN_DIST if GOAL_K else None, pair_seed=PAIR_SEED if GOAL_K else None, src=SRC, ckpt=CKPT, phi_identity=PHI_IDENTITY, obs_dim=OBS_DIM, latent_dim=LATENT_DIM, action_dim=ACTION_DIM,
               horizon=HORIZON, iterations=ITERATIONS, num_samples=NUM_SAMPLES, num_elites=NUM_ELITES, temperature=TEMPERATURE,
-              min_std=MIN_STD, init_std=INIT_STD, momentum=MOMENTUM, dist=DIST, mppi_norm=MPPI_NORM, n_labels=N_LABELS,
+              min_std=MIN_STD, init_std=INIT_STD, momentum=MOMENTUM, dist=DIST, mppi_norm=MPPI_NORM, planner=PLANNER,
+              cem=dict(samples=CEM_SAMPLES, topk=CEM_TOPK, iters=CEM_ITERS, init_std=CEM_INIT_STD, receding=RECEDING) if PLANNER == "cem" else None, n_labels=N_LABELS,
               num_evals=NUM_EVALS, eval_steps=EVAL_STEPS)
 with open(f'{LOGS_FOLDER}/info.txt', 'a') as file:
     file.write(str(kwargs) + '\n')
@@ -614,7 +652,12 @@ def rollout_chunk(ids):
         obs = np.stack(states).astype(np.float32)
         obs_l.append(obs)
         aux_l.append(np.stack([env_aux(e, s) for e, s in zip(envs, states)]))
-        actions, prev_mean, _ = plan_batch(PARAMS, jnp.asarray(obs), goals, prev_mean, jnp.asarray(step > 0), next_key())
+        if PLANNER == 'cem':
+            if step % RECEDING == 0:
+                cem_plan = np.asarray(cem_batch(PARAMS, jnp.asarray(obs), goals, next_key()))           # (n, H, A)
+            actions = cem_plan[:, step % RECEDING]
+        else:
+            actions, prev_mean, _ = plan_batch(PARAMS, jnp.asarray(obs), goals, prev_mean, jnp.asarray(step > 0), next_key())
         out = [env_step(e, a) for e, a in zip(envs, np.asarray(actions))]
         states = [o[0] for o in out]
         ogb_success |= np.array([o[1] for o in out])

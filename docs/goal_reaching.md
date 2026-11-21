@@ -41,6 +41,12 @@ goal latent, no value. LeWM / DINO-WM through this same MPPI: queued (planner=mp
 | start distance to the goal (xy) | 1.3 | 2.8 | 4.9 | 6.0 | 9.1 |
 | JEPA WM | 6 | 2 | 3 | 2 | 1 |
 | FBWM | 14 | 10 | 4 | 5 | 3 |
+| JEPA WM, seed 3 | 6 | | 2 | | 1 |
+| FBWM, seed 3 | 18 | | 7 | | 1 |
+
+Seed 3 geometry (Spearman latent distance vs displacement): FBWM 0.92, JEPA 0.52 (probe R^2 0.99 / 0.93), as seed 1.
+Runs: `hpc/logs/2026-11-21_23-1*_WMGOAL-*ev_am_s3*` (checkpoints `2026-11-21_22-18-34_FBWM-gphi-antmaze_medium`,
+`2026-11-21_22-29-20_JEPAWM-antmaze_medium`).
 
 **(B) Reference: published baselines with their own planner** (CEM, 25-step plans run open loop). Planner and latent both differ
 from (A), so these rows are not a test of the latent.
