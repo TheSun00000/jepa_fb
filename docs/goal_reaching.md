@@ -69,14 +69,16 @@ reference would be a goal-conditioned value method (e.g. OGBench's GCIQL / HIQL)
 Distance planning at other horizons (H = 3, 10, 20, 50) is in `tools/goal_results.py`: no horizon fixes it, and long
 horizons hurt FBWM on near goals.
 
-## antmaze-large and cube-single, seed 1 (JEPA WM: K = 10, 50, 200 only; FBWM evals running)
+## antmaze-large and cube-single, seed 1 (JEPA WM / FBWM: K = 10, 50, 200 only)
 
 | env | method | K=10 | 25 | 50 | 100 | 200 |
 |---|---|---|---|---|---|---|
 | antmaze-large | JEPA WM, distance MPPI | 5 | | 1 | | 0 |
+| antmaze-large | FBWM, distance MPPI | 13 | | 4 | | 0 |
 | antmaze-large | DINO-WM (state), CEM | 6 | 5 | 5 | 5 | 4 |
 | antmaze-large | LeWM (state), CEM | 10 | 7 | 4 | 6 | 5 |
 | cube-single | JEPA WM, distance MPPI | 39 | | 13 | | 18 |
+| cube-single | FBWM, distance MPPI | 21 | | 11 | | 16 |
 | cube-single | DINO-WM (state), CEM | 13 | 26 | 19 | 15 | 16 |
 | cube-single | LeWM (state), CEM | 14 | 27 | 13 | 12 | 14 |
 
@@ -92,7 +94,9 @@ the JEPA latent's geometry is the same as on antmaze (below). The same-planner L
 | same, k <= 25 | 0.70 | 0.31 |
 | Spearman(latent distance, k) (real displacement: 0.42) | 0.44 | 0.20 |
 
-JEPA WM on the other envs: antmaze-large R^2 0.96, Spearman 0.55 (k <= 25: 0.33); cube 0.94, 0.51 (0.35).
+Other envs (probe R^2, Spearman latent distance vs displacement, same for k <= 25): antmaze-large FBWM 0.99 / 0.91 / 0.63, JEPA
+0.96 / 0.55 / 0.33; cube FBWM 0.91 / 0.56 / 0.44, JEPA 0.94 / 0.51 / 0.35. On cube the FB latent's geometry advantage is small and
+the distance planner does WORSE on it than on the JEPA latent (21 vs 39 at K=10): the latent claim holds on the two mazes, not on cube.
 
 Runs: `2026-11-21_22-44-37_WMGOAL-fbwm-geom_fbwm_s1-antmaze_medium`, `2026-11-21_22-44-43_WMGOAL-wm-geom_wm_s1-antmaze_medium`,
 `2026-11-21_22-50-42_WMGOAL-wm-ev_al_s1_geom_wm-antmaze_large`, `2026-11-21_22-50-54_WMGOAL-wm-ev_cube_s1_geom_wm-cube_single`;
