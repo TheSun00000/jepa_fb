@@ -130,3 +130,8 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - Goal latent: antmaze_medium / antmaze_large / cube_single: encode the goal observation OGBench returns in `info['goal']` (official tasks goal_1..5, episode starts at the task's own init state). cheetah / walker / quadruped: g = sum_s w(s) phi(s), w = r / sum r over 10k labelled dataset states (fresh draw per episode; the weights are normalised, which is our reading of "weighted average").
 - Metric as in fbwm.py (dm_control: summed reward; goal tasks: reached at least once, plus OGBench's own `success` as `<task>_ogb_success`). Extra logged diagnostics: latent distance of the real visited states to the goal (`_dist_end`, `_dist_min`).
 - Not run yet; no smoke test was run locally (user's instruction).
+
+## 2026-11-21 (evening): OGBench goal tasks start at the official start of the task
+- Without `options={'task_id': k}`, `reset()` samples one of the 5 tasks at random and starts there, so a goal can coincide with the start (free successes on goal_4 / goal_5 of antmaze_medium). Now goal_k resets with `task_id=k` in `fbwm.py`, `fb_jax.py`, `tdmpc_jax.py`, `tdmpc_adapt.py` (`utils/ogbench_tasks.py:env_reset`). Evaluation change, not a method change. Non-goal tasks and dm_control are unchanged.
+- OGBench goal numbers of runs that finished before this commit used random starts and are not comparable with later ones; rerun final evals from checkpoints before comparing.
+- `wm_goal.py` always used official starts. It now also logs the real (x, y) distance of the ant to the goal (`xy_dist_start/end/min`), the trajectories (`trajectories.csv`) and the maze (`maze.csv`).

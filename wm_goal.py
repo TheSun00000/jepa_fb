@@ -399,6 +399,14 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
         benchmarks = [(cube_goal_reward, f'goal_{i + 1}', _cube_scale(t['goal_xyzs'][0])) for i, t in enumerate(task_infos)]
     else:                             # success = ant within 2 m of the goal (x, y) (fbwm.py's goal reward)
         benchmarks = [(goal_reaching_reward, f'goal_{i + 1}', np.array(t['goal_xy'])) for i, t in enumerate(task_infos)]
+    if ENV_NAME.startswith('antmaze'):    # maze.csv: one row per cell (block centre x, y, wall flag, block size), for the trajectory figure
+        _u = _env0.unwrapped
+        with open(f'{LOGS_FOLDER}/maze.csv', 'w', newline='') as _f:
+            _w = csv.writer(_f); _w.writerow(['i', 'j', 'x', 'y', 'wall', 'unit'])
+            for _i in range(_u.maze_map.shape[0]):
+                for _j in range(_u.maze_map.shape[1]):
+                    _w.writerow([_i, _j, _j * _u._maze_unit - _u._offset_x, _i * _u._maze_unit - _u._offset_y,
+                                 int(_u.maze_map[_i, _j]), _u._maze_unit])
     del _env0
 
     def make_eval_env():
@@ -437,13 +445,18 @@ with open(f'{LOGS_FOLDER}/info.txt', 'a') as file:
     file.write(str(config) + '\n')
 add_text_to_file(f'{LOGS_FOLDER}/info.txt', run_info(globals(), z_labels=N_LABELS))
 
+XY_TASKS = ENV_NAME.startswith('antmaze')   # antmaze: also log the real (x, y) distance (obs[:2]) of the ant to the goal xy, and its trajectory
 eval_columns = ['mean_over_tasks']
 for i in task_ids:
     label = benchmarks[i][1]
     eval_columns += [f'{label}_mean', f'{label}_std', f'{label}_dist_end', f'{label}_dist_min']
     eval_columns += [f'{label}_ogb_success'] if is_goal_task[label] else [f'{label}_goal_ess', f'{label}_goal_norm']
+    if XY_TASKS:
+        eval_columns += [f'{label}_xy_dist_start', f'{label}_xy_dist_end', f'{label}_xy_dist_min']
 eval_logger = CSVLogger(f'{LOGS_FOLDER}/eval_log.csv', eval_columns + ['num_evals', 'tag', 'time'])
-episode_logger = CSVLogger(f'{LOGS_FOLDER}/episodes.csv', ['task', 'episode', 'score', 'dist_end', 'dist_min'])
+episode_logger = CSVLogger(f'{LOGS_FOLDER}/episodes.csv', ['task', 'episode', 'score', 'dist_end', 'dist_min']
+                           + (['start_x', 'start_y', 'xy_dist_start', 'xy_dist_end', 'xy_dist_min'] if XY_TASKS else []))
+traj_logger = CSVLogger(f'{LOGS_FOLDER}/trajectories.csv', ['task', 'episode', 't', 'x', 'y']) if XY_TASKS else None
 
 # ── Goal latents ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 rng = np.random.default_rng(SEED)
@@ -524,6 +537,15 @@ for start in range(0, len(task_ids), EVAL_CHUNK):
         dists = np.asarray(jax.vmap(jax.vmap(latent_dist, in_axes=(0, None)), in_axes=(0, 0))(jnp.asarray(h_traj), goals[sl]))
         dist_end, dist_min = dists[:, -1], dists.min(axis=-1)
 
+        if XY_TASKS:      # real maze distance of the ant (obs[:2]) to the goal (x, y), same units as the success radius (2 m)
+            xy = obs_traj[sl][..., :2]                                              # (E, T, 2)
+            xy_d = np.linalg.norm(xy - np.asarray(param, dtype=np.float32), axis=-1)  # (E, T)
+            row.update({f'{label}_xy_dist_start': float(xy_d[:, 0].mean()), f'{label}_xy_dist_end': float(xy_d[:, -1].mean()),
+                        f'{label}_xy_dist_min': float(xy_d.min(axis=-1).mean())})
+            print('\t(x, y) distance to the goal: start', xy_d[:, 0].mean(), '| end', xy_d[:, -1].mean(), '| min', xy_d.min(axis=-1).mean())
+            for e in range(NUM_EVALS):
+                for t in range(EVAL_STEPS):
+                    traj_logger.log({'task': label, 'episode': e, 't': t, 'x': float(xy[e, t, 0]), 'y': float(xy[e, t, 1])})
         print(label, ':')
         print('\tscores:', scores.tolist())
         print('\tmean:', scores.mean(), '| std:', scores.std(ddof=1) if NUM_EVALS > 1 else 0.0,
@@ -537,8 +559,11 @@ for start in range(0, len(task_ids), EVAL_CHUNK):
             row[f'{label}_goal_ess'] = float(ess[sl].mean())
             row[f'{label}_goal_norm'] = float(jnp.linalg.norm(goals[sl], axis=-1).mean())
         for e in range(NUM_EVALS):
-            episode_logger.log({'task': label, 'episode': e, 'score': float(scores[e]),
-                                'dist_end': float(dist_end[e]), 'dist_min': float(dist_min[e])})
+            ep = {'task': label, 'episode': e, 'score': float(scores[e]), 'dist_end': float(dist_end[e]), 'dist_min': float(dist_min[e])}
+            if XY_TASKS:
+                ep.update({'start_x': float(xy[e, 0, 0]), 'start_y': float(xy[e, 0, 1]), 'xy_dist_start': float(xy_d[e, 0]),
+                           'xy_dist_end': float(xy_d[e, -1]), 'xy_dist_min': float(xy_d[e].min())})
+            episode_logger.log(ep)
 
 row.update({'mean_over_tasks': float(np.mean(means)), 'num_evals': NUM_EVALS, 'tag': 'final', 'time': time.time() - start_time})
 eval_logger.log(row)
