@@ -148,6 +148,14 @@ task inference for the cost of an FB head". Not now.
   - Cov(B) from labels vs dataset: equal at z50.
   - Negative results: BTD, mix_ratio, hidden_dim, discount, TD hyperparameters at z200.
 
+### Goal reaching vs reward-free world models (2026-11-21 night)  `[running: seed 2 FBWM; weak on cube]`
+Question (user): is FBWM better than a plain reward-free WM even on goal reaching? Full notes and tables: `docs/goal_reaching.md`.
+Holds on antmaze-medium (2 seeds) and antmaze-large under one short-horizon MPPI: the FB-shaped latent is the best distance cost
+(2-3x JEPA WM, state LeWM and DINO-WM), and its latent distance tracks real displacement (Spearman 0.92 vs 0.52). Does not hold on cube
+or under LeWM's 25-step CEM. FB's own goal reaching (z = B(goal)) is strong on the mazes but has no fair baseline yet (needs a
+goal-conditioned value method, e.g. GCIQL / HIQL on the same pairs). Next: FBWM seed 2, seed 3 on antmaze-large, decide whether the
+section goes into the paper and with which scope.
+
 ## 9. Order of work
 
 1. §3 protocol and script merge.
@@ -175,3 +183,4 @@ task inference for the cost of an FB head". Not now.
 - 2026-11-15: night results. lstsq planner reward + z_dim 200 give fbwm MPPI 666 on walker (3 seeds, FB 567); M1/M2 not needed; C4 label sweep updated.
 - 2026-11-15 (night): paper configuration fixed (gphi z50, consistency 2, lstsq, dataset Cov, root check); main table and label-budget figure in the tracker; handoff section for the paper draft.
 - 2026-11-15 (23:20): paper config revised to consistency 5 (consistency 2 hurts walker and cheetah); main table and figure final with 3 seeds.
+- 2026-11-22: goal-reaching study (section 8): goal_k protocol, LeWM / DINO-WM state baselines, same-planner comparisons; latent claim holds on the mazes only.

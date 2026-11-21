@@ -140,3 +140,16 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - The official goal_1 is ~28 m from the start and no run moved (0/10 everywhere, ant stays in the start cell). `goal_k=K` (antmaze only): a dataset state s_t as the start and s_{t+K} of the same trajectory as the goal, so the goal is reachable in K steps of the data policy.
 - One pair for all runs: drawn with `pair_seed` (default 0) from the dataset only, independent of checkpoint, horizon and run seed; saved as `pair.csv`. Pairs with (x, y) displacement < `goal_min_xy` (default 4 m = 2 x the success radius) are skipped, otherwise the goal could be reached for free. Success = within 2 m of the goal xy (fbwm.py's reward); `_ogb_success` uses OGBench's 0.5 m flag against the same goal.
 - Episodes start from the exact dataset state (qpos, qvel set in the simulator), the goal latent is phi(s_{t+K}). First runs: both checkpoints, H=5, K=25, 10 episodes.
+
+## 2026-11-22: goal-reaching evaluation for "FBWM vs reward-free WMs" (`docs/goal_reaching.md`)
+- Protocol: LeWM's near-goal pairs (goal_k), not the official OGBench tasks (every distance planner and the FB actor are near 0 there).
+  50 pairs per K from the -val file, pair_seed 0, the same pairs for every method; simulator set to the stored state.
+- The latent claim rests ONLY on same-planner comparisons (user, 2026-11-21): one planner, the latent changes. The FB actor / FB-goal
+  MPPI use FB's learned value and are reported apart, never against distance planners.
+- Baselines: state-based LeWM (MLP encoder + SIGReg + AdaLN predictor, frameskip 5) and DINO-WM (frozen encoder = standardised state),
+  ported from their papers (deviations in `wm_baselines.py`'s docstring). Run with their own CEM and with our MPPI (`planner=mppi`),
+  and our latents with their CEM (`wm_goal.py planner=cem`), so the planner and latent effects are separated.
+- Minimal eval set per checkpoint (reviewed): K in {10, 50, 200}, distance MPPI H=5 mppi_norm + geometry probe, FB actor (goal_k and
+  official) + one MPPI row (init-policy + root check). K=200 is at the noise floor for distance planners.
+- Cube reset caveat: obs[18] (gripper contact) differs after the reset by 0.3-0.8 (needs a physics step); positions are exact. Accepted.
+- Every proposed experiment goes to a Sonnet reviewer first, with the list of what was already run (user, 2026-11-21).

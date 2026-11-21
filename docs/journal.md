@@ -144,3 +144,25 @@ Dated session notes, newest last.
 - Eval-only, cheetah paper checkpoints seeds 1-2, paper protocol, MPPI mean (reference horizon 5: 399; policy 337): horizon 10 387, 20 389, 30 381, 50 380. Per task, reference vs horizon 50: vel2 577 -> 480, flip 167 -> 146, vel2Back 917 -> 928, vel10Back 210 -> 218, vel10 125 -> 126. Longer horizons are slightly worse on vel2 and flip, and slower (MPPI eval 184 s -> 398 / 552 / 855 s at horizon 20 / 30 / 50).
 - Profile at horizon 30 (seeds 1-2, vs horizon 5 seeds 1-3): vel2 MPPI reward per segment 0.84 / 0.57 / 0.49 / 0.34 / 0.25 (horizon 5: 0.88 / 0.73 / 0.53 / 0.45 / 0.38), |pitch| 0.50 -> 4.59 (0.36 -> 3.14). The tumble is not prevented, and MPPI tumbles slightly more. flip: MPPI still does not flip (|pitch| 0.16, reward 0.13-0.23).
 - So a longer plan with the same discount 0.95 and the same per-step B reward does not avoid the tumble. This does not refute "the cost is too far away": rewards at step k are weighted 0.95^k (0.21 at 30, 0.08 at 50), and the model error at 30+ steps is large. It does show that horizon alone is not the fix. A profile script bug found on the way: aggregate profiles per `horizon` value, not across all folders.
+
+## 2026-11-21 (night) to 2026-11-22: goal reaching, FBWM vs reward-free WMs (`docs/goal_reaching.md`)
+- Protocol `goal_k=K` (LeWM's): 50 pairs (s_t, s_{t+K}) of one trajectory from the -val file, simulator set to the stored qpos / qvel,
+  budget 2K, OGBench radius. Shared sampler in `utils/ogbench_tasks.py`; same pairs for `wm_goal.py`, `fbwm.py fbgoal_k`, `wm_baselines.py`.
+- New: `wm_baselines.py` (state-based LeWM and DINO-WM, their CEM; `planner=mppi` = our MPPI on their predictor), `fbwm.py
+  fbgoal_k / fbgoal_official` (FB goal z = B(goal), actor and MPPI), `wm_goal.py diag_geom` (probe + distance rank correlations) and
+  `planner=cem` (LeWM's CEM on JEPA / FBWM), `tools/goal_results.py` (tables from the run folders).
+- Results (successes / 50, K = 10 / 50 / 200; details and run folders in docs/goal_reaching.md):
+  - Same MPPI (5 steps, replan every step), four latents. antmaze-medium (2 seeds, / 100): FBWM 32 / 11 / 4, JEPA 12 / 5 / 2,
+    LeWM 7 / 4 / 3 (/ 50), DINO-WM 10 / 4 / 2. antmaze-large: FBWM 13 / 4 / 0, JEPA 5 / 1 / 0, LeWM 4 / 2 / 1, DINO 5 / 1 / 2.
+    cube: FBWM 21 / 11 / 16, JEPA 39 / 13 / 18, LeWM 43 / 11 / 13, DINO 30 / 12 / 10.
+  - Geometry, Spearman(latent distance, real displacement): FBWM 0.92 / 0.91 / 0.56 (medium / large / cube), JEPA 0.52 / 0.55 / 0.51.
+  - LeWM's CEM on all four latents (medium, cube, K = 10 / 50): all within noise (8-14 at K=10); replanning every step does not help CEM.
+  - FB's value (z = B(goal)): actor medium 42 / 30 / 19 (seed 3: 41 / 25 / 14), large 40 / 19 / 13, cube 7 / 3 / 6; official tasks
+    5, 2, 0, 0 / 50. Cube FBWM checkpoint scores 0 on the official goals in its own training eval too.
+- Reading: on the two mazes the FB-shaped latent is the best distance cost under short-horizon MPPI (2-3x every other latent, raw state
+  included), explained by its geometry. Not on cube, and not under LeWM's 25-step CEM. The FB actor is not compared with distance
+  planners (user: it uses a learned value); it needs a goal-conditioned value baseline (GCIQL / HIQL), not done.
+- Bugs on the way: zsh does not split `$VAR` in `for`/`set --` (two queue batches ran with one K or an empty ckpt; requeued);
+  `wm_baselines.py` receding assert blocked planner=mppi (fixed). JEPA seed 2 and FBWM seed 2 timed out on slow nodes (JEPA rerun done,
+  FBWM seed 2 requeued, evals to run when it ends).
+- Cancelled at the user's request: FB heads on the frozen JEPA WM for goal reaching (job 555171), already in the paper (Table 1).
