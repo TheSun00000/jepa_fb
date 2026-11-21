@@ -491,11 +491,17 @@ if __name__ == '__main__':
         def make_eval_env():
             return ogbench.make_env_and_datasets(ogb_name, env_only=True)
 
+        _goalk_init = None
+        if 'goal_k' in kwargs:   # goal_k=K: one fixed (start state, goal K steps ahead) pair instead of the official tasks (utils/ogbench_tasks.py)
+            from utils.ogbench_tasks import goalk_task
+            assert ENV_NAME != 'cube_single', 'goal_k is implemented for antmaze only'
+            _goalk_init, _goal_xy, _info = goalk_task(dataset_obs, NUM_TRAJECTORIES, TRAJECTORY_LEN, kwargs)
+            benchmarks = [(goal_reaching_reward, f"goalk_{_info['k']}", _goal_xy)]
+            print('goal_k task (fixed): start xy', np.round(_goalk_init[:2], 2), '| goal xy', np.round(_goal_xy, 2), '|', _info)
+
         def env_reset(e, label=None):
-            # goal_k starts at the official start of task k (without task_id OGBench samples a random task: free successes on goal_4/5)
-            if label is not None and label.startswith('goal_'):
-                return np.asarray(e.reset(options={'task_id': int(label.split('_')[1])})[0])
-            return np.asarray(e.reset()[0])
+            from utils.ogbench_tasks import reset_env
+            return reset_env(e, label, _goalk_init)
 
         def env_step(e, action):
             return np.asarray(e.step(action)[0])   # no autoreset / truncation handling: EVAL_STEPS = episode length
