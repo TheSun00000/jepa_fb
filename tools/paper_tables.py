@@ -16,7 +16,10 @@ from collections import defaultdict
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 LOGS = os.path.join(ROOT, 'hpc', 'logs')
 OUT = os.path.join(ROOT, 'hpc', 'status')
-ENVS = ['walker', 'cheetah', 'quadruped']   # antmaze left out for now (user, 2026-11-15)
+ENVS = ['walker', 'cheetah', 'quadruped', 'antmaze_m9', 'antmaze_g1']   # antmaze left out until 2026-11-21, then added (user)
+# OGBench antmaze_medium, navigate dataset, bc_coef 0.3 (2026-11-21): two columns. antmaze_m9 = mean over the 9 tasks (5 goals as success
+# rate, 4 velocity returns: dominated by the velocity tasks), zero-shot methods only. antmaze_g1 = goal_1 success rate in % (all methods;
+# TD-MPC and the adapted world model are trained on this one task).
 TASKS = {'walker': ['stand', 'walk', 'vel8', 'run', 'flip'], 'cheetah': ['vel10Back', 'vel2Back', 'vel2', 'vel10', 'flip'],
          'quadruped': ['stand', 'walk', 'run', 'jump']}
 NS = [100, 300, 1000, 3000, 10000]
@@ -152,6 +155,30 @@ for folder, kw, ev in runs('2026-11-15_*'):
 for (m, env, seed, n, score, folder) in LATE['fb_old']:
     if (m, env, int(seed), int(n)) not in S:
         put(m, env, seed, n, score, folder, 'FB checkpoints: 1M updates')
+
+# ── antmaze_medium navigate (2026-11-21) ──────────────────────────────────────────────────────────────────────────
+AM_KW = dict(env_name='antmaze_medium', dataset='navigate', bc_coef=0.3)
+for folder, kw, ev in runs('2026-11-2[1-9]_*antmaze_medium*'):
+    if any(kw.get(k) != v for k, v in AM_KW.items()) or 'eval_ckpt' in kw or 'num_outer_steps' in kw:
+        continue
+    fin = [x for x in ev if x.get('tag') == 'final']
+    if not fin:
+        continue
+    fin, seed = fin[-1], kw.get('seed', 1)
+    if '_FB-' in folder:
+        put('fb', 'antmaze_m9', seed, 10000, f(fin['mean_over_tasks']), folder)
+        put('fb', 'antmaze_g1', seed, 10000, None if f(fin['goal_1_mean']) is None else 100 * f(fin['goal_1_mean']), folder)
+    elif 'FBWM-gphi' in folder and str(kw.get('consistency_coef')) == '5' and str(kw.get('z_dim')) == '200' and 'horizon' not in kw and kw.get('mppi_reward') == 'lstsq':
+        note = 'z_dim 200' + ('' if str(kw.get('mppi_root_check')) in ('1', 'True') else ', no root check')
+        for m, pre in (('fbwm', ''), ('fbwm_policy', 'policy_')):
+            put(m, 'antmaze_m9', seed, 10000, f(fin[pre + 'mean_over_tasks']), folder, note)
+            g = f(fin[pre + 'goal_1_mean'])
+            put(m, 'antmaze_g1', seed, 10000, None if g is None else 100 * g, folder, note)
+    elif '_TDMPC-' in folder and '_TDMPC-adapt' not in folder and kw.get('task') == 'goal_1':
+        put('tdmpc', 'antmaze_g1', seed, 10000, 100 * f(fin['return_mean']), folder, 'goal_1 only')
+        put('tdmpc_policy', 'antmaze_g1', seed, 10000, 100 * f(fin['policy_return_mean']), folder, 'goal_1 only')
+    elif '_TDMPC-adapt-' in folder and kw.get('task') == 'goal_1' and str(kw.get('adapt_steps')) == '6000' and kw.get('q_data') == 'dataset':
+        put('adapt_full', 'antmaze_g1', seed, 10000, 100 * f(fin['return_mean']), folder, 'goal_1 only')
 
 # ── main table ─────────────────────────────────────────────────────────────────────────────────────────────────────
 ROWS = [
