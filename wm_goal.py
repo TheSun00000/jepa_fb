@@ -126,6 +126,13 @@ MOMENTUM = float(kwargs.get('momentum', 0.1))
 DIST = str(kwargs.get('dist', 'l2'))
 assert DIST in ('l2', 'cosine'), 'dist=l2|cosine'
 MPPI_NORM = flag(kwargs, 'mppi_norm')                 # softmax on elite values divided by their std (scale-free temperature)
+# diag_geom=1 (OGBench, 2026-11-22): geometry of the latent, no planning, then exit. Goal coordinates = antmaze (x, y) | cube block.
+#   probe_r2        : linear (ridge) probe phi(s) -> goal coordinates, fit on 200k train-file states, R^2 on 50k val-file states
+#   rho_dist_disp   : Spearman of ||phi(s_t) - phi(s_{t+k})|| with the real goal-coordinate displacement, 20k val pairs of one
+#                     trajectory, k uniform in 1..200 (rho_dist_disp_k25: k <= 25 only)
+#   rho_dist_k      : Spearman of the latent distance with k (temporal distance); rho_disp_k: the same for the real displacement
+# Written to diag_geom.csv (one row: metric columns).
+DIAG_GEOM = flag(kwargs, 'diag_geom')
 # Near goals (OGBench only, see the docstring): goal = the dataset state GOAL_K steps after the start, in the same trajectory.
 # GOAL_K = 0: the official tasks.
 assert ENV_NAME in OGBENCH_ENVS or 'goal_k' not in kwargs, 'goal_k is an OGBench option'
@@ -470,6 +477,53 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
         is_goal_task[label] = True
 
 assert STATE_DIM == OBS_DIM, f'env observation dim {STATE_DIM} != checkpoint encoder input {OBS_DIM}'
+
+if DIAG_GEOM:   # latent geometry, see DIAG_GEOM above
+    assert ENV_NAME in OGBENCH_ENVS, 'diag_geom is an OGBench option'
+    from utils.ogbench_tasks import goal_coords as _goal_coords
+    _dir = os.path.expanduser(kwargs.get('ogbench_dir', '~/.ogbench/data'))
+    _, _tr, _va = ogbench.make_env_and_datasets(ogb_name, dataset_dir=_dir, compact_dataset=True)
+    _c = _goal_coords(ENV_NAME)
+    _Otr = np.asarray(_tr['observations'], dtype=np.float32)
+    _Ova = np.asarray(_va['observations'], dtype=np.float32)
+    _end = (np.asarray(_va['valids']) == 0).astype(np.int64)
+    _epva = np.cumsum(_end) - _end
+    del _tr, _va
+    _rng = np.random.default_rng(0)
+
+    def _enc(o):
+        return np.concatenate([np.asarray(encode_batch(PARAMS, jnp.asarray(o[i:i + 50_000]))) for i in range(0, len(o), 50_000)])
+
+    def _rank(x):
+        return np.argsort(np.argsort(x)).astype(np.float64)
+
+    def _spearman(x, y):
+        rx, ry = _rank(x), _rank(y)
+        return float(np.corrcoef(rx, ry)[0, 1])
+
+    _itr = _rng.choice(len(_Otr), min(200_000, len(_Otr)), replace=False)
+    _iva = _rng.choice(len(_Ova), min(50_000, len(_Ova)), replace=False)
+    _Htr, _Hva = _enc(_Otr[_itr]), _enc(_Ova[_iva])
+    _Ytr, _Yva = _Otr[_itr][:, _c], _Ova[_iva][:, _c]
+    _X = np.concatenate([_Htr, np.ones((len(_Htr), 1))], 1).astype(np.float64)
+    _W = np.linalg.solve(_X.T @ _X + 1e-3 * np.eye(_X.shape[1]), _X.T @ _Ytr)
+    _P = np.concatenate([_Hva, np.ones((len(_Hva), 1))], 1) @ _W
+    probe_r2 = float(np.mean(1 - ((_P - _Yva) ** 2).sum(0) / ((_Yva - _Yva.mean(0)) ** 2).sum(0)))
+
+    _k = _rng.integers(1, 201, 60_000)
+    _s = _rng.integers(0, len(_Ova) - 201, 60_000)
+    _ok = _epva[_s] == _epva[_s + _k]
+    _s, _k = _s[_ok][:20_000], _k[_ok][:20_000]
+    _d_lat = np.linalg.norm(_enc(_Ova[_s]) - _enc(_Ova[_s + _k]), axis=-1)
+    _d_real = np.linalg.norm(_Ova[_s][:, _c] - _Ova[_s + _k][:, _c], axis=-1)
+    _near = _k <= 25
+    geom = dict(src=SRC, ckpt=CKPT, n_pairs=int(len(_s)), probe_r2=probe_r2, rho_dist_disp=_spearman(_d_lat, _d_real),
+                rho_dist_disp_k25=_spearman(_d_lat[_near], _d_real[_near]), rho_dist_k=_spearman(_d_lat, _k),
+                rho_disp_k=_spearman(_d_real, _k), lat_dist_mean=float(_d_lat.mean()))
+    CSVLogger(f'{LOGS_FOLDER}/diag_geom.csv', list(geom)).log(geom)
+    print('diag_geom:', geom)
+    add_text_to_file(f'{LOGS_FOLDER}/info.txt', f"finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    sys.exit(0)
 if 'tasks' in kwargs:
     wanted = str(kwargs['tasks']).split(',')
     assert all(w in is_goal_task for w in wanted), f'tasks= must be among {list(is_goal_task)}'
