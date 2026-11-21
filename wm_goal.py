@@ -16,9 +16,19 @@ Latents: phi(s) is projected on the sphere of radius sqrt(latent_dim) (as in fbw
 h' = sphere(h + d(h, a)). (phi_identity: raw observation, no projection.)
 
 Goal latent g:
-  * antmaze_medium | antmaze_large | cube_single: the official tasks goal_1..goal_5. One goal STATE per episode (the goal observation
-    OGBench returns in `info['goal']` at reset(options={'task_id': i})), encoded: g = phi(s_goal). The episode starts at the task's own
-    initial state.
+  * antmaze_medium | antmaze_large | cube_single, goal_k=K > 0 (default K = 25; LeWM's protocol): goal_n (default 50) (start, goal)
+    pairs from the dataset file (goal_split=val (default, the held-out file <name>-val.npz) | train). A pair is a dataset state s_t and
+    the state s_{t+K} of the SAME trajectory. The simulator is reset to the stored (qpos, qvel) of s_t, and g = phi(s_{t+K}) (the full
+    observation). Budget: goal_budget env steps (default 2K). Success: the goal coordinates come within goal_tol of those of s_{t+K}
+    at any step (OGBench's criteria: antmaze (x, y) = obs[:2] within 0.5; cube block position obs[19:22] within 0.4 = 0.04 m, the
+    observation is scaled by 10). Pairs whose goal coordinates move by less than goal_min_dist between s_t and s_{t+K} are excluded
+    (default goal_tol: the goal is not reached at the start). The pairs depend only on pair_seed (default 0) and the dataset file,
+    not on seed= or the checkpoint, so every checkpoint is evaluated on the same pairs. One task row, `goal_k<K>`, with goal_n
+    episodes (one pair each). goal_n=1 goal_min_dist=4 is close to the earlier one-fixed-pair version (commit 5c8a16f).
+    goal_k=0: the official tasks below.
+  * antmaze_medium | antmaze_large | cube_single, goal_k=0: the official tasks goal_1..goal_5. One goal STATE per episode (the goal
+    observation OGBench returns in `info['goal']` at reset(options={'task_id': i})), encoded: g = phi(s_goal). The episode starts at
+    the task's own initial state.
   * cheetah | walker | quadruped: g = sum_s w(s) phi(s), w(s) = r(s) / sum r over n_labels dataset states labelled with the task reward
     (a fresh draw per episode, like z in fbwm.py). Negative rewards are clipped to 0; if all rewards are 0 the weights are uniform.
 
@@ -28,21 +38,18 @@ MPPI mean is executed (re-planned at every step, mean warm-started).
 dist=l2 (default) | cosine. On the sphere every h_H has the same norm, so l2 and cosine rank the candidates the same way (g is not
 renormalised); they only differ in scale (temperature) and, without the sphere (phi_identity), in what they measure.
 
-goal_k=K (antmaze only; replaces the 5 official tasks, 2026-11-21): ONE fixed (start, goal) pair taken from the dataset: a state s_t and
-the state s_{t+K} of the same trajectory (K steps ahead) is the goal. The pair is drawn with pair_seed (default 0) from the dataset, so
-it does not depend on the checkpoint, the horizon or the run seed: every run with the same dataset= and pair_seed= uses the same pair.
-Every episode starts from that start state (qpos, qvel set in the simulator, the dataset observation is [qpos, qvel]); the goal
-latent is phi(s_{t+K}). Pairs whose (x, y) displacement is below goal_min_xy (default 4 m, twice the success radius) are skipped, so the
-goal is not reached for free. The task is named goal_k<K>. Needs the OGBench dataset (dataset=, ogbench_dir=).
-
 Metric (same as fbwm.py): dm_control: sum over the 1000 steps of the task reward of the visited states. Goal tasks (antmaze / cube):
 1 if the goal was reached at least once (fbwm's reward: antmaze within 2 m of the goal xy, cube block within 0.04 m), else 0;
-`<task>_ogb_success` is OGBench's own success flag (ever true during the episode).
+`<task>_ogb_success` is OGBench's own success flag (ever true during the episode). goal_k > 0: success as described above;
+`<task>_gdist_{start,end,min}` = distance of the goal coordinates to the goal (mean over episodes), `<task>_reset_err` = max |obs after
+the reset - stored s_t| (mean over episodes; checks the simulator reset), and goal_pairs.csv lists the pairs.
 
 Flags (key=value): env_name= ckpt= [phi_identity=false] [num_evals=10] [n_labels=10000] [tasks=goal_1,goal_2 (default: all)]
   [horizon=5] [iterations=6] [num_samples=512] [num_elites=64] [temperature=0.5] [min_std=0.05] [init_std=2.0] [momentum=0.1]
-  [goal_k=25] [pair_seed=0] [goal_min_xy=4.0] [dist=l2] [mppi_norm=false] [eval_chunk=<tasks rolled out in parallel>] [seed=] [name=<tag in the run folder name>]
-  [dataset=explore|stitch|navigate (antmaze) | play|noisy (cube): only names the env, no data is loaded] [ogbench_dir=].
+  [dist=l2] [mppi_norm=false] [eval_chunk=<tasks rolled out in parallel>] [seed=] [name=<tag in the run folder name>]
+  [dataset=explore|stitch|navigate (antmaze) | play|noisy (cube): names the env and, with goal_k > 0, the file the pairs come from]
+  [ogbench_dir=] [goal_k=25 (0: official tasks)] [goal_n=50] [goal_split=val] [goal_budget=2K] [goal_tol=0.5 antmaze | 0.4 cube]
+  [goal_min_dist=goal_tol] [pair_seed=0].
 Writes logs/<timestamp>_WMGOAL-<src>-<env>/{eval_log.csv, episodes.csv, info.txt}.
 """
 import os
@@ -118,11 +125,20 @@ INIT_STD = float(kwargs.get('init_std', 2.0))
 MOMENTUM = float(kwargs.get('momentum', 0.1))
 DIST = str(kwargs.get('dist', 'l2'))
 assert DIST in ('l2', 'cosine'), 'dist=l2|cosine'
-GOAL_K = int(kwargs['goal_k']) if 'goal_k' in kwargs else None      # fixed (start, goal) pair K steps apart (antmaze only)
-PAIR_SEED = int(kwargs.get('pair_seed', 0))
-GOAL_MIN_XY = float(kwargs.get('goal_min_xy', 4.0))
-assert GOAL_K is None or ENV_NAME.startswith('antmaze'), 'goal_k is for antmaze_medium | antmaze_large'
 MPPI_NORM = flag(kwargs, 'mppi_norm')                 # softmax on elite values divided by their std (scale-free temperature)
+# Near goals (OGBench only, see the docstring): goal = the dataset state GOAL_K steps after the start, in the same trajectory.
+# GOAL_K = 0: the official tasks.
+assert ENV_NAME in OGBENCH_ENVS or 'goal_k' not in kwargs, 'goal_k is an OGBench option'
+GOAL_K = int(kwargs.get('goal_k', 25)) if ENV_NAME in OGBENCH_ENVS else 0
+assert GOAL_K >= 0
+GOAL_N = int(kwargs.get('goal_n', 50))                # (start, goal) pairs = episodes of the goal_k task
+GOAL_SPLIT = str(kwargs.get('goal_split', 'val'))     # dataset file the pairs come from
+assert GOAL_SPLIT in ('val', 'train'), 'goal_split=val|train'
+GOAL_BUDGET = int(kwargs.get('goal_budget', 2 * GOAL_K))
+GOAL_TOL = float(kwargs.get('goal_tol', 0.4 if ENV_NAME == 'cube_single' else 0.5))   # OGBench's success radius (obs units)
+GOAL_MIN_DIST = float(kwargs.get('goal_min_dist', GOAL_TOL))
+PAIR_SEED = int(kwargs.get('pair_seed', 0))
+GOAL_COORDS = slice(19, 22) if ENV_NAME == 'cube_single' else slice(0, 2)   # cube: block position; antmaze: ant (x, y)
 
 # ── Checkpoint: phi (encoder) and the dynamics, sizes read from the parameter shapes ──────────────────────────────────────────────
 with open(CKPT, 'rb') as f:
@@ -376,7 +392,7 @@ if ENV_NAME in ['cheetah', 'walker', 'quadruped']:
     def timestep2obs(timestep):
         return np.concatenate([v if len(v.shape) != 0 else v.reshape(-1) for k, v in timestep.observation.items()])
 
-    def env_reset(e, task_idx):
+    def env_reset(e, task_idx, ep_idx=0):
         return timestep2obs(e.reset()), None          # (obs, goal observation: none, the goal latent comes from the labelled states)
 
     def env_step(e, action):
@@ -402,11 +418,16 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
         ogb_name, EVAL_STEPS = f"cube-single-{kwargs.get('dataset', 'play')}-v0", 200            # official episode length
     else:
         ogb_name, EVAL_STEPS = f"antmaze-{ENV_NAME.split('_')[1]}-{kwargs.get('dataset', 'explore')}-v0", 1000
-    if GOAL_K is None:
+    if GOAL_K == 0:
         _env0 = ogbench.make_env_and_datasets(ogb_name, env_only=True)
     else:
+        import mujoco
         OGB_DIR = os.path.expanduser(kwargs.get('ogbench_dir', '~/.ogbench/data'))
-        _env0, _ds = ogbench.make_env_and_datasets(ogb_name, dataset_dir=OGB_DIR, compact_dataset=True)[:2]
+        # add_info: the stored (qpos, qvel) of every state, to reset the simulator to it (the cube observation is not the full state)
+        _env0, _ds_train, _ds_val = ogbench.make_env_and_datasets(ogb_name, dataset_dir=OGB_DIR, compact_dataset=True, add_info=True)
+        _ds = _ds_val if GOAL_SPLIT == 'val' else _ds_train
+        del _ds_train, _ds_val
+        assert 'qpos' in _ds and 'qvel' in _ds, f'{ogb_name}: the dataset file has no qpos / qvel'
     STATE_DIM = _env0.observation_space.shape[0]
     assert _env0.action_space.shape[0] == ACTION_DIM, f'env action dim {_env0.action_space.shape[0]} != checkpoint {ACTION_DIM}'
     task_infos = _env0.unwrapped.task_infos
@@ -422,46 +443,60 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
                 for _j in range(_u.maze_map.shape[1]):
                     _w.writerow([_i, _j, _j * _u._maze_unit - _u._offset_x, _i * _u._maze_unit - _u._offset_y,
                                  int(_u.maze_map[_i, _j]), _u._maze_unit])
-    if GOAL_K is not None:
-        # one fixed pair (s_t, s_{t+K}) of the dataset, from pair_seed only; trajectories are stored back to back (see fbwm.py)
+    if GOAL_K > 0:
+        # GOAL_N pairs (s_t, s_{t+K}) of the same trajectory, drawn with pair_seed only. Compact dataset: trajectories are stored back to
+        # back and 'valids' is 0 on the last row of each one.
         _obs = np.asarray(_ds['observations'], dtype=np.float32)
-        _n_traj = int((np.asarray(_ds['valids']) == 0).sum())
-        _traj_len = _ds['terminals'].shape[0] // _n_traj
-        assert _n_traj * _traj_len == _ds['terminals'].shape[0], 'unexpected OGBench trajectory layout'
-        _rng = np.random.default_rng(PAIR_SEED)
-        for _try in range(1_000_000):
-            _i = int(_rng.integers(0, _n_traj * _traj_len))
-            if _i % _traj_len > _traj_len - 1 - GOAL_K:
-                continue
-            START_OBS, GOAL_OBS = _obs[_i], _obs[_i + GOAL_K]
-            if np.linalg.norm(GOAL_OBS[:2] - START_OBS[:2]) >= GOAL_MIN_XY:
-                break
-        else:
-            raise RuntimeError(f'no pair with (x, y) displacement >= {GOAL_MIN_XY} m at k={GOAL_K}')
-        GOAL_XY = GOAL_OBS[:2].copy()
-        benchmarks = [(goal_reaching_reward, f'goal_k{GOAL_K}', GOAL_XY)]
-        print(f'fixed pair: dataset index {_i} (trajectory {_i // _traj_len}, step {_i % _traj_len}), k={GOAL_K}, start xy {START_OBS[:2]}, '
-              f'goal xy {GOAL_XY}, displacement {np.linalg.norm(GOAL_XY - START_OBS[:2]):.2f} m')
-        with open(f'{LOGS_FOLDER}/pair.csv', 'w', newline='') as _f:
-            _w = csv.writer(_f); _w.writerow(['dataset_index', 'trajectory', 'step', 'k', 'start_x', 'start_y', 'goal_x', 'goal_y', 'xy_dist'])
-            _w.writerow([_i, _i // _traj_len, _i % _traj_len, GOAL_K, *START_OBS[:2], *GOAL_XY, float(np.linalg.norm(GOAL_XY - START_OBS[:2]))])
+        _end = (np.asarray(_ds['valids']) == 0).astype(np.int64)
+        _ep = np.cumsum(_end) - _end                                       # trajectory id of every row
+        _t = np.arange(len(_obs) - GOAL_K)
+        _t = _t[_ep[_t] == _ep[_t + GOAL_K]]                               # start rows whose state K steps later is in the same trajectory
+        _disp = np.linalg.norm(_obs[_t + GOAL_K, GOAL_COORDS] - _obs[_t, GOAL_COORDS], axis=-1)
+        _cand = _t[_disp >= GOAL_MIN_DIST]
+        print(f'goal_k={GOAL_K} ({GOAL_SPLIT} file): {len(_cand)} of {len(_t)} start states have a goal displacement >= {GOAL_MIN_DIST} '
+              f'(displacement of all pairs: median {np.median(_disp):.3f}, 90th percentile {np.percentile(_disp, 90):.3f})')
+        assert len(_cand) >= GOAL_N, f'only {len(_cand)} pairs with a goal displacement >= {GOAL_MIN_DIST} at goal_k={GOAL_K}'
+        _pick = np.sort(np.random.default_rng(PAIR_SEED).choice(_cand, GOAL_N, replace=False))
+        START_OBS, GOAL_OBS = _obs[_pick], _obs[_pick + GOAL_K]
+        START_QPOS = np.asarray(_ds['qpos'])[_pick].astype(np.float64)
+        START_QVEL = np.asarray(_ds['qvel'])[_pick].astype(np.float64)
+        GOAL_COORD = GOAL_OBS[:, GOAL_COORDS].copy()                        # (GOAL_N, 2) antmaze (x, y) | (GOAL_N, 3) cube block
+        benchmarks = [(None, f'goal_k{GOAL_K}', None)]                      # one task, one pair per episode
+        NUM_EVALS, EVAL_STEPS = GOAL_N, GOAL_BUDGET
+        with open(f'{LOGS_FOLDER}/goal_pairs.csv', 'w', newline='') as _f:
+            _w = csv.writer(_f)
+            _w.writerow(['episode', 'dataset_index', 'trajectory', 'k', 'start_coords', 'goal_coords', 'displacement'])
+            for _e, _i in enumerate(_pick):
+                _w.writerow([_e, int(_i), int(_ep[_i]), GOAL_K, ' '.join(f'{v:.4f}' for v in _obs[_i, GOAL_COORDS]),
+                             ' '.join(f'{v:.4f}' for v in GOAL_COORD[_e]), float(np.linalg.norm(GOAL_COORD[_e] - _obs[_i, GOAL_COORDS]))])
         del _ds, _obs
     del _env0
 
     def make_eval_env():
         return ogbench.make_env_and_datasets(ogb_name, env_only=True)
 
-    def env_reset(e, task_idx):
-        ob, info = e.reset(options=dict(task_id=task_idx + 1))     # the task's own initial state; info['goal'] = the goal observation
-        return np.asarray(ob), np.asarray(info['goal'])
-
-    if GOAL_K is not None:
-        def env_reset(e, task_idx):      # every episode: the fixed start state (the observation is [qpos, qvel]) and the fixed goal
-            e.reset()
-            u = e.unwrapped
-            u.set_state(START_OBS[:u.model.nq].astype(np.float64), START_OBS[u.model.nq:].astype(np.float64))
-            u.set_goal(goal_xy=GOAL_XY)  # OGBench's own success flag (0.5 m) then refers to this goal too
-            return np.asarray(u.get_ob()), GOAL_OBS
+    def env_reset(e, task_idx, ep_idx=0):
+        if GOAL_K == 0:
+            ob, info = e.reset(options=dict(task_id=task_idx + 1))     # the task's own initial state; info['goal'] = the goal observation
+            return np.asarray(ob), np.asarray(info['goal'])
+        # goal_k: the simulator is set to the stored state s_t of pair ep_idx; the goal observation is s_{t+K}
+        e.reset(options=dict(task_id=1))                               # any task: the state is overwritten below
+        u = e.unwrapped
+        if ENV_NAME == 'cube_single':
+            assert u._data.qpos.shape == START_QPOS[ep_idx].shape, (u._data.qpos.shape, START_QPOS[ep_idx].shape)
+            u._data.qpos[:] = START_QPOS[ep_idx]
+            u._data.qvel[:] = START_QVEL[ep_idx]
+            # OGBench's own success flag (block within 0.04 m of the target mocap) then refers to this goal; obs = (x - 0.425, y, z) * 10
+            u._data.mocap_pos[u._cube_target_mocap_ids[0]] = GOAL_COORD[ep_idx] / 10.0 + np.array([0.425, 0.0, 0.0])
+            mujoco.mj_forward(u._model, u._data)
+            u.pre_step()
+            u.post_step()
+            ob = u.compute_observation()
+        else:
+            u.set_state(START_QPOS[ep_idx], START_QVEL[ep_idx])
+            u.set_goal(goal_xy=GOAL_COORD[ep_idx])                     # OGBench's own success flag (0.5) then refers to this goal
+            ob = u.get_ob()
+        return np.asarray(ob), GOAL_OBS[ep_idx]
 
     def env_step(e, action):
         ob, _, _, _, info = e.step(action)
@@ -483,7 +518,9 @@ else:
 EVAL_CHUNK = int(kwargs.get('eval_chunk', len(task_ids)))
 print('tasks:', [benchmarks[i][1] for i in task_ids], '| episode steps:', EVAL_STEPS)
 
-config = dict(goal_k=GOAL_K, pair_seed=PAIR_SEED, goal_min_xy=GOAL_MIN_XY, src=SRC, ckpt=CKPT, phi_identity=PHI_IDENTITY, obs_dim=OBS_DIM, latent_dim=LATENT_DIM, action_dim=ACTION_DIM,
+config = dict(goal_k=GOAL_K, goal_n=GOAL_N if GOAL_K else None, goal_split=GOAL_SPLIT if GOAL_K else None,
+              goal_budget=GOAL_BUDGET if GOAL_K else None, goal_tol=GOAL_TOL if GOAL_K else None,
+              goal_min_dist=GOAL_MIN_DIST if GOAL_K else None, pair_seed=PAIR_SEED if GOAL_K else None, src=SRC, ckpt=CKPT, phi_identity=PHI_IDENTITY, obs_dim=OBS_DIM, latent_dim=LATENT_DIM, action_dim=ACTION_DIM,
               horizon=HORIZON, iterations=ITERATIONS, num_samples=NUM_SAMPLES, num_elites=NUM_ELITES, temperature=TEMPERATURE,
               min_std=MIN_STD, init_std=INIT_STD, momentum=MOMENTUM, dist=DIST, mppi_norm=MPPI_NORM, n_labels=N_LABELS,
               num_evals=NUM_EVALS, eval_steps=EVAL_STEPS)
@@ -498,10 +535,13 @@ for i in task_ids:
     label = benchmarks[i][1]
     eval_columns += [f'{label}_mean', f'{label}_std', f'{label}_dist_end', f'{label}_dist_min']
     eval_columns += [f'{label}_ogb_success'] if is_goal_task[label] else [f'{label}_goal_ess', f'{label}_goal_norm']
+    if GOAL_K:
+        eval_columns += [f'{label}_gdist_start', f'{label}_gdist_end', f'{label}_gdist_min', f'{label}_reset_err']
     if XY_TASKS:
         eval_columns += [f'{label}_xy_dist_start', f'{label}_xy_dist_end', f'{label}_xy_dist_min']
 eval_logger = CSVLogger(f'{LOGS_FOLDER}/eval_log.csv', eval_columns + ['num_evals', 'tag', 'time'])
 episode_logger = CSVLogger(f'{LOGS_FOLDER}/episodes.csv', ['task', 'episode', 'score', 'dist_end', 'dist_min']
+                           + (['gdist_start', 'gdist_end', 'gdist_min', 'reset_err', 'ogb_success'] if GOAL_K else [])
                            + (['start_x', 'start_y', 'xy_dist_start', 'xy_dist_end', 'xy_dist_min'] if XY_TASKS else []))
 traj_logger = CSVLogger(f'{LOGS_FOLDER}/trajectories.csv', ['task', 'episode', 't', 'x', 'y']) if XY_TASKS else None
 
@@ -542,7 +582,7 @@ def rollout_chunk(ids):
     goal_obs = []
     for j, b in enumerate(ids):
         for e in range(NUM_EVALS):
-            s, g_obs = env_reset(envs[j * NUM_EVALS + e], b)
+            s, g_obs = env_reset(envs[j * NUM_EVALS + e], b, e)
             states.append(s)
             if g_obs is None:        # dm_control: reward-weighted average of the latents of labelled states
                 g, es = reward_weighted_goal(benchmarks[b][0], benchmarks[b][2])
@@ -575,8 +615,17 @@ for start in range(0, len(task_ids), EVAL_CHUNK):
     for j, b in enumerate(ids):
         reward_fn, label, param = benchmarks[b]
         sl = slice(j * NUM_EVALS, (j + 1) * NUM_EVALS)
-        rewards = np.asarray(reward_fn(jnp.asarray(aux_traj[sl], dtype=jnp.float32), param))            # (E, T)
-        scores = (rewards > 0).any(axis=-1).astype(np.float64) if is_goal_task[label] else rewards.sum(axis=-1)
+        if GOAL_K:        # one pair per episode: success = the goal coordinates within GOAL_TOL of the goal's at any step
+            gdist = np.linalg.norm(obs_traj[sl][..., GOAL_COORDS] - GOAL_COORD[:, None, :], axis=-1)       # (E, T)
+            scores = (gdist <= GOAL_TOL).any(axis=-1).astype(np.float64)
+            reset_err = np.abs(obs_traj[sl][:, 0] - START_OBS).max(axis=-1)                               # (E,)
+            row.update({f'{label}_gdist_start': float(gdist[:, 0].mean()), f'{label}_gdist_end': float(gdist[:, -1].mean()),
+                        f'{label}_gdist_min': float(gdist.min(axis=-1).mean()), f'{label}_reset_err': float(reset_err.mean())})
+            print(f'\tgoal-coordinate distance: start {gdist[:, 0].mean():.3f} | end {gdist[:, -1].mean():.3f} | '
+                  f'min {gdist.min(axis=-1).mean():.3f} | reset error {reset_err.mean():.2e} (max {reset_err.max():.2e})')
+        else:
+            rewards = np.asarray(reward_fn(jnp.asarray(aux_traj[sl], dtype=jnp.float32), param))            # (E, T)
+            scores = (rewards > 0).any(axis=-1).astype(np.float64) if is_goal_task[label] else rewards.sum(axis=-1)
 
         # distance (in the planner's metric) of the REAL visited states to the goal latent: does it track the task?
         h_traj = np.asarray(encode_batch(PARAMS, jnp.asarray(obs_traj[sl].reshape(-1, OBS_DIM))))
@@ -586,7 +635,8 @@ for start in range(0, len(task_ids), EVAL_CHUNK):
 
         if XY_TASKS:      # real maze distance of the ant (obs[:2]) to the goal (x, y), same units as the success radius (2 m)
             xy = obs_traj[sl][..., :2]                                              # (E, T, 2)
-            xy_d = np.linalg.norm(xy - np.asarray(param, dtype=np.float32), axis=-1)  # (E, T)
+            goal_xy = GOAL_COORD[:, None, :] if GOAL_K else np.asarray(param, dtype=np.float32)   # goal_k: one goal per episode
+            xy_d = np.linalg.norm(xy - goal_xy, axis=-1)                            # (E, T)
             row.update({f'{label}_xy_dist_start': float(xy_d[:, 0].mean()), f'{label}_xy_dist_end': float(xy_d[:, -1].mean()),
                         f'{label}_xy_dist_min': float(xy_d.min(axis=-1).mean())})
             print('\t(x, y) distance to the goal: start', xy_d[:, 0].mean(), '| end', xy_d[:, -1].mean(), '| min', xy_d.min(axis=-1).mean())
@@ -607,6 +657,9 @@ for start in range(0, len(task_ids), EVAL_CHUNK):
             row[f'{label}_goal_norm'] = float(jnp.linalg.norm(goals[sl], axis=-1).mean())
         for e in range(NUM_EVALS):
             ep = {'task': label, 'episode': e, 'score': float(scores[e]), 'dist_end': float(dist_end[e]), 'dist_min': float(dist_min[e])}
+            if GOAL_K:
+                ep.update({'gdist_start': float(gdist[e, 0]), 'gdist_end': float(gdist[e, -1]), 'gdist_min': float(gdist[e].min()),
+                           'reset_err': float(reset_err[e]), 'ogb_success': float(ogb_success[sl][e])})
             if XY_TASKS:
                 ep.update({'start_x': float(xy[e, 0, 0]), 'start_y': float(xy[e, 0, 1]), 'xy_dist_start': float(xy_d[e, 0]),
                            'xy_dist_end': float(xy_d[e, -1]), 'xy_dist_min': float(xy_d[e].min())})
