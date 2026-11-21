@@ -22,12 +22,12 @@ WALL, GOAL, START = "#C4CCD3", "#0064E0", "#1C2B33"
 
 
 def find_run(logs, key, horizon, task):
-    pat = f"{logs}/*WMGOAL-*-{key}_{task.replace('_', '')}_h{horizon}-antmaze_medium"
+    pat = f"{logs}/*WMGOAL-*-{key}_{task.replace('_', '')}_h{horizon}-antmaze_medium"   # goal_1 -> goal1, goal_k25 -> goalk25
     runs = sorted(glob.glob(pat))
     return runs[-1] if runs else None
 
 
-def draw(ax, run, task):
+def draw(ax, run, task, goal_xy):
     maze = pd.read_csv(f"{run}/maze.csv")
     for _, c in maze[maze.wall == 1].iterrows():
         ax.add_patch(Rectangle((c.x - c.unit / 2, c.y - c.unit / 2), c.unit, c.unit, fc=WALL, ec="none"))
@@ -39,7 +39,7 @@ def draw(ax, run, task):
     for e, g in traj.groupby("episode"):
         ax.plot(g.x, g.y, lw=1.0, alpha=0.85, color=cmap(e / max(1, traj.episode.max())), zorder=3)
     ax.scatter(eps.start_x, eps.start_y, s=22, marker="o", color=START, zorder=5, label="start")
-    gx, gy = GOAL_XY[task]
+    gx, gy = goal_xy
     ax.add_patch(Circle((gx, gy), SUCCESS_RADIUS, fc="none", ec=GOAL, lw=1.4, ls="--", zorder=4))
     ax.scatter([gx], [gy], s=110, marker="*", color=GOAL, zorder=6, label="goal")
     ax.set_xlim(maze.x.min() - 2, maze.x.max() + 2)
@@ -56,23 +56,39 @@ def main():
     ap.add_argument("--logs", default="hpc/logs")
     ap.add_argument("--out", default="figures/goal_traj_antmaze_medium_goal1")
     ap.add_argument("--task", default="goal_1")
+    ap.add_argument("--goalk", type=int, default=None, help="goal_k runs (wm_goal.py goal_k=K, H=5): 1 x 2 panels, fixed start and goal from pair.csv")
     a = ap.parse_args()
+    if a.goalk:
+        a.task = f"goal_k{a.goalk}"
+        if a.out == "figures/goal_traj_antmaze_medium_goal1":
+            a.out = f"figures/goal_traj_antmaze_medium_goalk{a.goalk}"
+        HORIZONS[:] = [5]
 
-    fig, axs = plt.subplots(len(ROWS), len(HORIZONS), figsize=(4.2 * len(HORIZONS), 4.4 * len(ROWS)))
+    if a.goalk:      # one row, one panel per checkpoint
+        fig, axs = plt.subplots(1, len(ROWS), figsize=(4.4 * len(ROWS), 4.8))
+        axs = np.asarray(axs).reshape(len(ROWS), 1).T
+    else:
+        fig, axs = plt.subplots(len(ROWS), len(HORIZONS), figsize=(4.2 * len(HORIZONS), 4.4 * len(ROWS)))
     for i, (key, name) in enumerate(ROWS):
         for j, h in enumerate(HORIZONS):
-            ax = axs[i, j]
+            ax = axs[j, i] if a.goalk else axs[i, j]
             run = find_run(a.logs, key, h, a.task)
             if run is None or not os.path.exists(f"{run}/trajectories.csv"):
                 ax.text(0.5, 0.5, "not run yet", ha="center", va="center", transform=ax.transAxes)
                 ax.set_axis_off()
                 continue
-            eps = draw(ax, run, a.task)
+            if a.goalk:
+                pair = pd.read_csv(f"{run}/pair.csv").iloc[0]
+                goal_xy = (pair.goal_x, pair.goal_y)
+            else:
+                goal_xy = GOAL_XY[a.task]
+            eps = draw(ax, run, a.task, goal_xy)
             ax.set_title(f"{name}, H = {h}\n(x, y) dist. to goal: end {eps.xy_dist_end.mean():.1f}, min {eps.xy_dist_min.mean():.1f}"
                          f"   success {int(eps.score.sum())}/{len(eps)}", fontsize=9)
-    axs[0, 0].legend(loc="lower right", fontsize=8, frameon=False)
-    fig.suptitle(f"antmaze_medium {a.task}: MPPI on the latent distance of the last imagined state to the goal state (10 episodes each)",
-                 fontsize=11)
+    axs.flat[0].legend(loc="lower right", fontsize=8, frameon=False)
+    what = f"fixed start, goal {a.goalk} steps ahead" if a.goalk else a.task
+    fig.suptitle(f"antmaze_medium, {what}: MPPI on the latent distance of the last imagined state to the goal state (10 episodes each)",
+                 fontsize=10)
     fig.tight_layout()
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     fig.savefig(a.out + ".png", dpi=150)

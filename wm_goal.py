@@ -28,13 +28,20 @@ MPPI mean is executed (re-planned at every step, mean warm-started).
 dist=l2 (default) | cosine. On the sphere every h_H has the same norm, so l2 and cosine rank the candidates the same way (g is not
 renormalised); they only differ in scale (temperature) and, without the sphere (phi_identity), in what they measure.
 
+goal_k=K (antmaze only; replaces the 5 official tasks, 2026-11-21): ONE fixed (start, goal) pair taken from the dataset: a state s_t and
+the state s_{t+K} of the same trajectory (K steps ahead) is the goal. The pair is drawn with pair_seed (default 0) from the dataset, so
+it does not depend on the checkpoint, the horizon or the run seed: every run with the same dataset= and pair_seed= uses the same pair.
+Every episode starts from that start state (qpos, qvel set in the simulator, the dataset observation is [qpos, qvel]); the goal
+latent is phi(s_{t+K}). Pairs whose (x, y) displacement is below goal_min_xy (default 4 m, twice the success radius) are skipped, so the
+goal is not reached for free. The task is named goal_k<K>. Needs the OGBench dataset (dataset=, ogbench_dir=).
+
 Metric (same as fbwm.py): dm_control: sum over the 1000 steps of the task reward of the visited states. Goal tasks (antmaze / cube):
 1 if the goal was reached at least once (fbwm's reward: antmaze within 2 m of the goal xy, cube block within 0.04 m), else 0;
 `<task>_ogb_success` is OGBench's own success flag (ever true during the episode).
 
 Flags (key=value): env_name= ckpt= [phi_identity=false] [num_evals=10] [n_labels=10000] [tasks=goal_1,goal_2 (default: all)]
   [horizon=5] [iterations=6] [num_samples=512] [num_elites=64] [temperature=0.5] [min_std=0.05] [init_std=2.0] [momentum=0.1]
-  [dist=l2] [mppi_norm=false] [eval_chunk=<tasks rolled out in parallel>] [seed=] [name=<tag in the run folder name>]
+  [goal_k=25] [pair_seed=0] [goal_min_xy=4.0] [dist=l2] [mppi_norm=false] [eval_chunk=<tasks rolled out in parallel>] [seed=] [name=<tag in the run folder name>]
   [dataset=explore|stitch|navigate (antmaze) | play|noisy (cube): only names the env, no data is loaded] [ogbench_dir=].
 Writes logs/<timestamp>_WMGOAL-<src>-<env>/{eval_log.csv, episodes.csv, info.txt}.
 """
@@ -111,6 +118,10 @@ INIT_STD = float(kwargs.get('init_std', 2.0))
 MOMENTUM = float(kwargs.get('momentum', 0.1))
 DIST = str(kwargs.get('dist', 'l2'))
 assert DIST in ('l2', 'cosine'), 'dist=l2|cosine'
+GOAL_K = int(kwargs['goal_k']) if 'goal_k' in kwargs else None      # fixed (start, goal) pair K steps apart (antmaze only)
+PAIR_SEED = int(kwargs.get('pair_seed', 0))
+GOAL_MIN_XY = float(kwargs.get('goal_min_xy', 4.0))
+assert GOAL_K is None or ENV_NAME.startswith('antmaze'), 'goal_k is for antmaze_medium | antmaze_large'
 MPPI_NORM = flag(kwargs, 'mppi_norm')                 # softmax on elite values divided by their std (scale-free temperature)
 
 # ── Checkpoint: phi (encoder) and the dynamics, sizes read from the parameter shapes ──────────────────────────────────────────────
@@ -391,7 +402,11 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
         ogb_name, EVAL_STEPS = f"cube-single-{kwargs.get('dataset', 'play')}-v0", 200            # official episode length
     else:
         ogb_name, EVAL_STEPS = f"antmaze-{ENV_NAME.split('_')[1]}-{kwargs.get('dataset', 'explore')}-v0", 1000
-    _env0 = ogbench.make_env_and_datasets(ogb_name, env_only=True)
+    if GOAL_K is None:
+        _env0 = ogbench.make_env_and_datasets(ogb_name, env_only=True)
+    else:
+        OGB_DIR = os.path.expanduser(kwargs.get('ogbench_dir', '~/.ogbench/data'))
+        _env0, _ds = ogbench.make_env_and_datasets(ogb_name, dataset_dir=OGB_DIR, compact_dataset=True)[:2]
     STATE_DIM = _env0.observation_space.shape[0]
     assert _env0.action_space.shape[0] == ACTION_DIM, f'env action dim {_env0.action_space.shape[0]} != checkpoint {ACTION_DIM}'
     task_infos = _env0.unwrapped.task_infos
@@ -407,6 +422,30 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
                 for _j in range(_u.maze_map.shape[1]):
                     _w.writerow([_i, _j, _j * _u._maze_unit - _u._offset_x, _i * _u._maze_unit - _u._offset_y,
                                  int(_u.maze_map[_i, _j]), _u._maze_unit])
+    if GOAL_K is not None:
+        # one fixed pair (s_t, s_{t+K}) of the dataset, from pair_seed only; trajectories are stored back to back (see fbwm.py)
+        _obs = np.asarray(_ds['observations'], dtype=np.float32)
+        _n_traj = int((np.asarray(_ds['valids']) == 0).sum())
+        _traj_len = _ds['terminals'].shape[0] // _n_traj
+        assert _n_traj * _traj_len == _ds['terminals'].shape[0], 'unexpected OGBench trajectory layout'
+        _rng = np.random.default_rng(PAIR_SEED)
+        for _try in range(1_000_000):
+            _i = int(_rng.integers(0, _n_traj * _traj_len))
+            if _i % _traj_len > _traj_len - 1 - GOAL_K:
+                continue
+            START_OBS, GOAL_OBS = _obs[_i], _obs[_i + GOAL_K]
+            if np.linalg.norm(GOAL_OBS[:2] - START_OBS[:2]) >= GOAL_MIN_XY:
+                break
+        else:
+            raise RuntimeError(f'no pair with (x, y) displacement >= {GOAL_MIN_XY} m at k={GOAL_K}')
+        GOAL_XY = GOAL_OBS[:2].copy()
+        benchmarks = [(goal_reaching_reward, f'goal_k{GOAL_K}', GOAL_XY)]
+        print(f'fixed pair: dataset index {_i} (trajectory {_i // _traj_len}, step {_i % _traj_len}), k={GOAL_K}, start xy {START_OBS[:2]}, '
+              f'goal xy {GOAL_XY}, displacement {np.linalg.norm(GOAL_XY - START_OBS[:2]):.2f} m')
+        with open(f'{LOGS_FOLDER}/pair.csv', 'w', newline='') as _f:
+            _w = csv.writer(_f); _w.writerow(['dataset_index', 'trajectory', 'step', 'k', 'start_x', 'start_y', 'goal_x', 'goal_y', 'xy_dist'])
+            _w.writerow([_i, _i // _traj_len, _i % _traj_len, GOAL_K, *START_OBS[:2], *GOAL_XY, float(np.linalg.norm(GOAL_XY - START_OBS[:2]))])
+        del _ds, _obs
     del _env0
 
     def make_eval_env():
@@ -415,6 +454,14 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
     def env_reset(e, task_idx):
         ob, info = e.reset(options=dict(task_id=task_idx + 1))     # the task's own initial state; info['goal'] = the goal observation
         return np.asarray(ob), np.asarray(info['goal'])
+
+    if GOAL_K is not None:
+        def env_reset(e, task_idx):      # every episode: the fixed start state (the observation is [qpos, qvel]) and the fixed goal
+            e.reset()
+            u = e.unwrapped
+            u.set_state(START_OBS[:u.model.nq].astype(np.float64), START_OBS[u.model.nq:].astype(np.float64))
+            u.set_goal(goal_xy=GOAL_XY)  # OGBench's own success flag (0.5 m) then refers to this goal too
+            return np.asarray(u.get_ob()), GOAL_OBS
 
     def env_step(e, action):
         ob, _, _, _, info = e.step(action)
@@ -436,7 +483,7 @@ else:
 EVAL_CHUNK = int(kwargs.get('eval_chunk', len(task_ids)))
 print('tasks:', [benchmarks[i][1] for i in task_ids], '| episode steps:', EVAL_STEPS)
 
-config = dict(src=SRC, ckpt=CKPT, phi_identity=PHI_IDENTITY, obs_dim=OBS_DIM, latent_dim=LATENT_DIM, action_dim=ACTION_DIM,
+config = dict(goal_k=GOAL_K, pair_seed=PAIR_SEED, goal_min_xy=GOAL_MIN_XY, src=SRC, ckpt=CKPT, phi_identity=PHI_IDENTITY, obs_dim=OBS_DIM, latent_dim=LATENT_DIM, action_dim=ACTION_DIM,
               horizon=HORIZON, iterations=ITERATIONS, num_samples=NUM_SAMPLES, num_elites=NUM_ELITES, temperature=TEMPERATURE,
               min_std=MIN_STD, init_std=INIT_STD, momentum=MOMENTUM, dist=DIST, mppi_norm=MPPI_NORM, n_labels=N_LABELS,
               num_evals=NUM_EVALS, eval_steps=EVAL_STEPS)
