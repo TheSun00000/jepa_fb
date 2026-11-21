@@ -67,12 +67,18 @@ def load_ogbench(env_name, kwargs):
         benchmarks = [(goal_reaching_reward, f'goal_{i + 1}', np.array(t['goal_xy'])) for i, t in enumerate(tasks)]
         benchmarks += [(velocity_reward, 'vel_left', [-1, 0]), (velocity_reward, 'vel_up', [0, 1]),
                        (velocity_reward, 'vel_down', [0, -1]), (velocity_reward, 'vel_right', [1, 0])]
+    if kwargs.get('tasks') == 'goal':   # tasks=goal: evaluate the goal-reaching tasks only
+        benchmarks = [b for b in benchmarks if b[1].startswith('goal_')]
     del env0, dataset
 
     def make_eval_env():
         return ogbench.make_env_and_datasets(ogb_name, env_only=True)
 
-    def env_reset(e):
+    def env_reset(e, label=None):
+        # goal_k: start at the official start of task k (OGBench reset(options={'task_id': k})). Without it OGBench samples one of the
+        # tasks at random and starts there, so a goal can coincide with the start (goal_4 and goal_5 of antmaze_medium).
+        if label is not None and label.startswith('goal_'):
+            return np.asarray(e.reset(options={'task_id': int(label.split('_')[1])})[0])
         return np.asarray(e.reset()[0])
 
     def env_step(e, action):

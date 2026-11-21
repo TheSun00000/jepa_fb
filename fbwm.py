@@ -484,12 +484,17 @@ if __name__ == '__main__':
             benchmarks = [(goal_reaching_reward, f'goal_{i + 1}', np.array(t['goal_xy'])) for i, t in enumerate(_env0.unwrapped.task_infos)]
             benchmarks += [(velocity_reward, 'vel_left', [-1, 0]), (velocity_reward, 'vel_up', [0, 1]),
                            (velocity_reward, 'vel_down', [0, -1]), (velocity_reward, 'vel_right', [1, 0])]
+        if kwargs.get('tasks') == 'goal':   # tasks=goal: evaluate the goal-reaching tasks only
+            benchmarks = [b for b in benchmarks if b[1].startswith('goal_')]
         del _env0
 
         def make_eval_env():
             return ogbench.make_env_and_datasets(ogb_name, env_only=True)
 
-        def env_reset(e):
+        def env_reset(e, label=None):
+            # goal_k starts at the official start of task k (without task_id OGBench samples a random task: free successes on goal_4/5)
+            if label is not None and label.startswith('goal_'):
+                return np.asarray(e.reset(options={'task_id': int(label.split('_')[1])})[0])
             return np.asarray(e.reset()[0])
 
         def env_step(e, action):
@@ -500,6 +505,10 @@ if __name__ == '__main__':
 
         def env_physics(e):
             return None
+
+    def reset_for(e, label=None):
+        """Env reset for the task `label` (OGBench: goal_k starts at the official start of task k); other envs: plain reset."""
+        return env_reset(e, label) if ENV_NAME in ('antmaze_medium', 'antmaze_large', 'cube_single') else env_reset(e)
 
     # ── Zero-shot setup ───────────────────────────────────────────────────────────
     # Training never sees a reward. Both variants learn, on the latent phi(s) (bounded, radius sqrt(latent_dim)):
@@ -1354,7 +1363,7 @@ if __name__ == '__main__':
     mppi_spread_log = []   # std of the final-iteration elite values at every MPPI step (reset at every eval row)
     corr_ls_log = {}       # task index -> corr of R with its least-squares fit on B (reset at every eval row)
 
-    def rollout_batch(ts, zs, random_key, mode='mppi', ws=None):
+    def rollout_batch(ts, zs, random_key, mode='mppi', ws=None, labels=None):
         """len(zs) envs rolled out in lock-step, env i conditioned on task vector zs[i]. One batched jitted call per step.
         mode='mppi': MPPI planning. mode='policy': the policy alone (deterministic, no planning)."""
         n = zs.shape[0]
@@ -1362,7 +1371,7 @@ if __name__ == '__main__':
             eval_envs.append(make_eval_env())
         envs = eval_envs[:n]
 
-        states    = [env_reset(e) for e in envs]
+        states    = [reset_for(e, None if labels is None else labels[i]) for i, e in enumerate(envs)]
         prev_mean = jnp.zeros((n, tdmpc_config.horizon, ACTION_DIM))
         obs_l, aux_l, phys_l = [], [], []
         elite_spreads = mppi_spread_log
@@ -1452,7 +1461,8 @@ if __name__ == '__main__':
             zs, ws, cs = jnp.stack(zs), jnp.stack(ws), np.asarray(jnp.stack(cs))
 
             obs_traj, aux_traj, phys_traj = rollout_batch(train_state, zs, next_eval_key(), mode,
-                                                          ws if MPPI_REWARD == 'lstsq' else None)
+                                                          ws if MPPI_REWARD == 'lstsq' else None,
+                                                          labels=[benchmarks[b][1] for b in ids for _ in range(num_evals)])
 
             for j, b in enumerate(ids):
                 reward_fn, label, param = benchmarks[b]

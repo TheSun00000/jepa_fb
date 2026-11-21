@@ -430,6 +430,10 @@ if __name__ == '__main__':
         def env_physics(e):
             return None
 
+    def reset_for(e, label=None):
+        """Env reset for the task `label` (OGBench: goal_k starts at the official start of task k); other envs: plain reset."""
+        return env_reset(e, label) if ENV_NAME in ('antmaze_medium', 'antmaze_large', 'cube_single') else env_reset(e)
+
     N_BENCH   = len(benchmarks)
     NUM_EVALS = 5             # episodes per task at the periodic evals (tag 'eval')
     Z_LABELS = int(kwargs['z_labels']) if 'z_labels' in kwargs else 10_000   # labelled states per inferred z (one fresh draw per episode)
@@ -898,7 +902,7 @@ if __name__ == '__main__':
 
     eval_envs = []   # pool of env instances, grown on demand and reused across evals
 
-    def rollout_batch(actor_params, zs):
+    def rollout_batch(actor_params, zs, labels=None):
         """Rolls out len(zs) envs in lock-step (one batched, jitted policy call per step).
         Env i is conditioned on zs[i]. Returns obs (n, T, obs_dim), aux (n, T, aux_dim), physics (n, T, P) or None."""
         n = zs.shape[0]
@@ -906,7 +910,7 @@ if __name__ == '__main__':
             eval_envs.append(make_eval_env())
         envs = eval_envs[:n]
 
-        states = [env_reset(e) for e in envs]
+        states = [reset_for(e, None if labels is None else labels[i]) for i, e in enumerate(envs)]
         obs_l, aux_l, phys_l = [], [], []
         for _ in tqdm(range(EVAL_STEPS), leave=False):
             obs = np.stack(states).astype(np.float32)
@@ -985,7 +989,7 @@ if __name__ == '__main__':
                     zs.append(z); cs.append(corr)
             zs, cs = jnp.stack(zs), np.asarray(jnp.stack(cs))
 
-            obs_traj, aux_traj, phys_traj = rollout_batch(train_state.actor_params, zs)
+            obs_traj, aux_traj, phys_traj = rollout_batch(train_state.actor_params, zs, labels=[benchmarks[b][1] for b in ids for _ in range(num_evals)])
 
             for j, b in enumerate(ids):
                 reward_fn, label, param = benchmarks[b]

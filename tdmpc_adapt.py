@@ -449,6 +449,10 @@ if __name__ == '__main__':
         def env_physics(e):
             return None
 
+    def reset_for(e, label=None):
+        """Env reset for the task `label` (OGBench: goal_k starts at the official start of task k); other envs: plain reset."""
+        return env_reset(e, label) if ENV_NAME in ('antmaze_medium', 'antmaze_large', 'cube_single') else env_reset(e)
+
     # ── Task selection (adapt only) and run settings ──────────────────────────────
 
     if MODE == 'adapt':
@@ -1091,7 +1095,7 @@ if __name__ == '__main__':
             eval_envs.append(make_eval_env())
         envs = eval_envs[:NUM_EVALS]
 
-        states    = [env_reset(e) for e in envs]
+        states    = [reset_for(e, TASK) for e in envs]
         prev_mean = jnp.zeros((NUM_EVALS, adapt_config.horizon, ACTION_DIM))
         obs_l, aux_l, phys_l = [], [], []
         for step in tqdm(range(EVAL_STEPS), leave=False):
