@@ -70,6 +70,25 @@ Mazes: the FBWM latent is the best distance cost, 2-3x every other latent (raw s
 the CEM-vs-MPPI gap of LeWM / DINO-WM (14 -> 43, 13 -> 30) confirms that JEPA's earlier cube lead was the planner.
 Runs: `hpc/logs/2026-11-21_23-*_WMBASE-*-mppi-*`; all cells with `python tools/goal_results.py --runs`.
 
+**(A'') Same planner = LeWM's CEM, all four latents** (300 samples, top 30, 30 iterations, 25-step plan, squared L2; JEPA / FBWM:
+`wm_goal.py planner=cem horizon=25 receding=25`, the 1-step dynamics rolled 25 times; "every step" = receding=1). Seed 1, / 50.
+
+| env | latent | K=10 | K=50 | K=10, replan every step | K=50, replan every step |
+|---|---|---|---|---|---|
+| antmaze-medium | FBWM | 10 | 8 | 10 | 6 |
+| antmaze-medium | JEPA WM | 8 | 3 | 11 | 2 |
+| antmaze-medium | LeWM (state) | 11 | 6 | | |
+| antmaze-medium | DINO-WM (raw state) | 14 | 6 | | |
+| cube-single | FBWM | 11 | 13 | 12 | 13 |
+| cube-single | JEPA WM | 12 | 9 | 10 | 8 |
+| cube-single | LeWM (state) | 14 | 13 | | |
+| cube-single | DINO-WM (raw state) | 13 | 19 | | |
+
+Under LeWM's CEM the four latents are within noise of each other (+-5 / 50), and replanning every step does not help CEM. So the
+FBWM latent's lead in (A') shows with the short-horizon MPPI only, and the cube gap between planners (JEPA 39 with MPPI vs 12 with
+CEM, LeWM 43 vs 14) is the search (5-step MPPI vs 25-step CEM), not open-loop execution.
+Runs: `hpc/logs/2026-11-2*_WMGOAL-*-cem_*`.
+
 **(B) Reference: published baselines with their own planner** (CEM, 25-step plans run open loop). Planner and latent both differ
 from (A), so these rows are not a test of the latent.
 
