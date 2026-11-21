@@ -375,6 +375,8 @@ for K in EVAL_K:
     envs = eval_envs[:GOAL_N]
     states = [reset_to_goal_pair(e, ENV_NAME, P['start_qpos'][i], P['start_qvel'][i], P['goal_coord'][i]) for i, e in enumerate(envs)]
     reset_err = np.abs(np.stack(states) - P['start_obs']).max(axis=-1)
+    _bad = np.where(np.abs(np.stack(states) - P['start_obs']).max(axis=0) > 1e-3)[0]
+    print('reset: observation dims with error > 1e-3:', {int(d): round(float(np.abs(np.stack(states) - P['start_obs'])[:, d].max()), 4) for d in _bad})
     goal_e = encode_batch(params, jnp.asarray(standardise(P['goal_obs'])))
     budget, coords, seq, t_plan = 2 * K, [], None, 0
     for step in tqdm(range(budget), leave=False):

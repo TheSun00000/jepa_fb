@@ -136,6 +136,7 @@ def reset_to_goal_pair(e, env_name, qpos, qvel, goal_coord):
         u._data.qvel[:] = qvel
         u._data.mocap_pos[u._cube_target_mocap_ids[0]] = goal_coord / 10.0 + np.array([0.425, 0.0, 0.0])   # obs = (x - 0.425, y, z) * 10
         mujoco.mj_forward(u._model, u._data)
+        mujoco.mj_rnePostConstraint(u._model, u._data)          # contact forces (the gripper-contact feature), as after a step
         u.pre_step()
         u.post_step()
         return np.asarray(u.compute_observation())
