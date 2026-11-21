@@ -69,10 +69,13 @@ if __name__ == '__main__':
 
     assert 'env_name' in kwargs, "env_name= is required"
     ENV_NAME = kwargs['env_name']
-    assert ENV_NAME in ['cheetah', 'walker', 'quadruped', 'antmaze']
+    OGBENCH_ENVS = ['antmaze_medium', 'antmaze_large', 'cube_single']
+    assert ENV_NAME in ['cheetah', 'walker', 'quadruped', 'antmaze'] + OGBENCH_ENVS
 
     # ── Config ────────────────────────────────────────────────────────────────────
     # cheetah | walker | quadruped (dm_control)  ;  antmaze (d4rl antmaze-large-diverse-v2)
+    # antmaze_medium | antmaze_large | cube_single (OGBench, 2026-11-21): dataset=explore|stitch|navigate (antmaze, default explore) or
+    #   play|noisy (cube, default play); ogbench_dir= folder of the OGBench .npz files (default ~/.ogbench/data)
     # Zero-shot: nothing is trained on a reward. Every benchmark task of the env is evaluated.
     SEED = resolve_seed(kwargs)      # random unless seed= is given; recorded in info.txt
     # phi_identity=True: phi(s) = s. No encoder: F(s, a, z), B(s) = g(s) (the FB backward map on the raw observation) and
@@ -352,7 +355,7 @@ if __name__ == '__main__':
         def env_physics(e):
             return e.physics.get_state()
 
-    else:  # antmaze
+    elif ENV_NAME == 'antmaze':
         import gym
         import d4rl   # registers the antmaze environments
 
@@ -427,6 +430,67 @@ if __name__ == '__main__':
                 y = y * block_size * 2 - torso_y + (w - 1) * block_size - w * block_size + 12
                 h, w = h * block_size * 2, w * block_size * 2
                 ax.add_patch(patches.Rectangle((x, y), h, w, linewidth=2, edgecolor='gray', facecolor='gray'))
+
+    else:  # OGBench: antmaze_medium | antmaze_large | cube_single
+        import ogbench
+        OGB_DIR = os.path.expanduser(kwargs.get('ogbench_dir', '~/.ogbench/data'))
+        if ENV_NAME == 'cube_single':
+            OGB_DATASET = kwargs.get('dataset', 'play')
+            assert OGB_DATASET in ('play', 'noisy'), 'dataset=play|noisy for cube_single'
+            ogb_name = f'cube-single-{OGB_DATASET}-v0'
+            EVAL_STEPS = 200      # official episode length
+        else:
+            OGB_DATASET = kwargs.get('dataset', 'explore')
+            assert OGB_DATASET in ('explore', 'stitch', 'navigate'), 'dataset=explore|stitch|navigate for antmaze'
+            ogb_name = f"antmaze-{ENV_NAME.split('_')[1]}-{OGB_DATASET}-v0"
+            EVAL_STEPS = 1000     # official episode length
+        print('OGBench dataset:', ogb_name, 'from', OGB_DIR)
+        _env0, dataset = ogbench.make_env_and_datasets(ogb_name, dataset_dir=OGB_DIR, compact_dataset=True)[:2]
+        STATE_DIM, ACTION_DIM = _env0.observation_space.shape[0], _env0.action_space.shape[0]
+        # OGBench trajectories are stored back to back, 'terminals' = 1 on the last row of each one
+        # (compact dataset: 'terminals' is 1 on the last TWO rows of a trajectory, 'valids' is 0 on the last one only)
+        NUM_TRAJECTORIES = int((np.asarray(dataset['valids']) == 0).sum())
+        TRAJECTORY_LEN = dataset['terminals'].shape[0] // NUM_TRAJECTORIES
+        assert NUM_TRAJECTORIES * TRAJECTORY_LEN == dataset['terminals'].shape[0], 'unexpected OGBench trajectory layout'
+        N = NUM_TRAJECTORIES * TRAJECTORY_LEN
+        dataset_obs     = np.asarray(dataset['observations'], dtype=np.float32)[:N].reshape(-1, STATE_DIM)
+        dataset_actions = np.asarray(dataset['actions'], dtype=np.float32)[:N].reshape(-1, ACTION_DIM)
+        dataset_aux     = dataset_obs       # rewards are computed from the full observation
+        del dataset
+
+        if ENV_NAME == 'cube_single':
+            # obs[19:22] = block position, obs[12:15] = effector position, both rescaled by OGBench: x -> (x - 0.425) * 10,
+            # y -> y * 10, z -> z * 10. Goals: the 5 official tasks (block goal position), success = block within 0.04 m.
+            def _cube_scale(p): return np.array([(p[0] - 0.425) * 10, p[1] * 10, p[2] * 10], dtype=np.float32)
+            def cube_goal_reward(state, goal):
+                dist = jnp.linalg.norm(state[..., 19:22] - jnp.asarray(goal, dtype=jnp.float32), axis=-1)
+                return (dist < 0.4).astype(jnp.float32) * 2 - 1
+            def cube_block_dir(state, direction):   # dense: block displacement along an axis of the table
+                return state[..., 19] * direction[0] + state[..., 20] * direction[1]
+            benchmarks = [(cube_goal_reward, f'goal_{i + 1}', _cube_scale(t['goal_xyzs'][0])) for i, t in enumerate(_env0.unwrapped.task_infos)]
+            benchmarks += [(cube_block_dir, 'block_x+', [1, 0]), (cube_block_dir, 'block_x-', [-1, 0]),
+                           (cube_block_dir, 'block_y+', [0, 1]), (cube_block_dir, 'block_y-', [0, -1])]
+        else:
+            # obs[:2] = ant (x, y), obs[15:17] = (vx, vy): same layout as the d4rl antmaze. Goals: the 5 official tasks.
+            benchmarks = [(goal_reaching_reward, f'goal_{i + 1}', np.array(t['goal_xy'])) for i, t in enumerate(_env0.unwrapped.task_infos)]
+            benchmarks += [(velocity_reward, 'vel_left', [-1, 0]), (velocity_reward, 'vel_up', [0, 1]),
+                           (velocity_reward, 'vel_down', [0, -1]), (velocity_reward, 'vel_right', [1, 0])]
+        del _env0
+
+        def make_eval_env():
+            return ogbench.make_env_and_datasets(ogb_name, env_only=True)
+
+        def env_reset(e):
+            return np.asarray(e.reset()[0])
+
+        def env_step(e, action):
+            return np.asarray(e.step(action)[0])   # no autoreset / truncation handling: EVAL_STEPS = episode length
+
+        def env_aux(e, state):
+            return state
+
+        def env_physics(e):
+            return None
 
     # ── Zero-shot setup ───────────────────────────────────────────────────────────
     # Training never sees a reward. Both variants learn, on the latent phi(s) (bounded, radius sqrt(latent_dim)):
@@ -1343,6 +1407,12 @@ if __name__ == '__main__':
             for k in range(3):
                 add_largest_maze_walls(axs[b, k])
 
+        elif ENV_NAME in OGBENCH_ENVS:   # antmaze: ant (x, y); cube: block (x, y)
+            ix = (0, 1) if ENV_NAME != 'cube_single' else (19, 20)
+            axs[b, 0].scatter(eval_obs[..., ix[0]], eval_obs[..., ix[1]], c=real_rewards, s=2)
+            axs[b, 1].scatter(eval_obs[..., ix[0]], eval_obs[..., ix[1]], c=recon_rewards, s=2)
+            axs[b, 2].scatter(obs_traj[..., ix[0]], obs_traj[..., ix[1]], c='red', s=2)
+
         axs[b, 0].set_title(f'{label}')
         axs[b, 1].set_title('Linear reconstruction B(s)^T z')
         axs[b, 2].set_title(f'Agent Trajectory ({MODE_NAMES[mode]})')
@@ -1380,7 +1450,7 @@ if __name__ == '__main__':
 
                 # same metric as the FB script: sum over the trajectory of the task reward of the visited states
                 trajectory_rewards = np.asarray(reward_fn(jnp.asarray(aux_traj[sl], dtype=jnp.float32), param)).sum(axis=-1)
-                if ENV_NAME == 'antmaze' and 'goal' in label:
+                if (ENV_NAME == 'antmaze' or ENV_NAME in OGBENCH_ENVS) and 'goal' in label:
                     # goal tasks: 1 if the goal was reached at least once, else 0
                     trajectory_rewards = np.where(trajectory_rewards != -EVAL_STEPS, 1.0, 0.0)
 
