@@ -70,6 +70,15 @@ if __name__ == '__main__':
     assert 'env_name' in kwargs, "env_name= is required"
     ENV_NAME = kwargs['env_name']
     OGBENCH_ENVS = ['antmaze_medium', 'antmaze_large', 'cube_single']
+    # Behaviour-cloning regulariser of the policy (OGBench antmaze / cube, as in offline_qd_jax.py): the policy loss is normalised by its own
+    # magnitude and bc_coef * MSE(policy action, dataset action) is added. bc_coef=0 (default): unchanged.
+    BC_COEF = float(kwargs['bc_coef']) if 'bc_coef' in kwargs else 0.0
+
+    def bc_combine(main, bc, coef):
+        if coef == 0:
+            return main
+        return main / (jax.lax.stop_gradient(jnp.abs(main)) + 1e-8) + coef * bc
+
     assert ENV_NAME in ['cheetah', 'walker', 'quadruped', 'antmaze'] + OGBENCH_ENVS
 
     # ── Config ────────────────────────────────────────────────────────────────────
@@ -830,6 +839,7 @@ if __name__ == '__main__':
         mix_ratio:           float = 0.5     # fraction of task vectors taken from B(random dataset state), as in FB
         # policy noise in the FB target action and in the actor loss
         stddev:              float = 0.2
+        bc_coef:             float = 0.0     # behaviour-cloning term of the policy (see bc_combine)
         std_clip:            float = 0.3
         # MPPI planning
         min_std:             float = 0.05
@@ -1162,7 +1172,7 @@ if __name__ == '__main__':
                 a = self.pi(pi_params, h_in, z, k_pi, c.stddev)
                 F1, F2 = self.F(f_params, h_in, a, z)
                 Q = jnp.minimum((F1 * z).sum(-1), (F2 * z).sum(-1))
-                return -Q.mean(), Q.mean()
+                return bc_combine(-Q.mean(), jnp.mean((a - action[0]) ** 2), c.bc_coef), Q.mean()
 
             (pi_loss, q_mean), pi_grads = jax.value_and_grad(pi_loss_fn, has_aux=True)(ts.pi_params)
             pi_updates, pi_optimizer_state = self.pi_optimizer.update(pi_grads, ts.pi_optimizer_state, ts.pi_params)
@@ -1282,7 +1292,7 @@ if __name__ == '__main__':
             h = self.encode(ts.params['encoder'], obs)
             return self.pi(ts.pi_params, h, zs, None, 0.0)
 
-    tdmpc_config = TDMPCFBConfig(variant=VARIANT, batch_size=BATCH_SIZE, horizon=HORIZON, phi_identity=PHI_IDENTITY, frozen_wm=FREEZE_WM)
+    tdmpc_config = TDMPCFBConfig(variant=VARIANT, bc_coef=BC_COEF, batch_size=BATCH_SIZE, horizon=HORIZON, phi_identity=PHI_IDENTITY, frozen_wm=FREEZE_WM)
     for name in ('lr', 'discount', 'consistency_coef', 'bcons_coef', 'ortho_coef', 'b_ortho_coef', 'f_encoder_grad',
                  'b_encoder_grad', 'q_loss_coef', 'mix_ratio', 'stddev', 'tau'):
         if name in kwargs:

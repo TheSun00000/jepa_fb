@@ -71,7 +71,16 @@ if __name__ == '__main__':
     assert 'task' in kwargs, "task= is required (one TD-MPC model is trained per benchmark task, e.g. task=vel10)"
     ENV_NAME = kwargs['env_name']
     TASK     = str(kwargs['task'])
-    assert ENV_NAME in ['cheetah', 'walker', 'quadruped', 'antmaze']
+    assert ENV_NAME in ['cheetah', 'walker', 'quadruped', 'antmaze', 'antmaze_medium', 'antmaze_large', 'cube_single']
+    # Behaviour-cloning regulariser of the policy (OGBench antmaze / cube, as in offline_qd_jax.py): the policy loss is normalised by its own
+    # magnitude and bc_coef * MSE(policy action, dataset action) is added. bc_coef=0 (default): unchanged.
+    BC_COEF = float(kwargs['bc_coef']) if 'bc_coef' in kwargs else 0.0
+
+    def bc_combine(main, bc, coef):
+        if coef == 0:
+            return main
+        return main / (jax.lax.stop_gradient(jnp.abs(main)) + 1e-8) + coef * bc
+
 
     # ── Config ────────────────────────────────────────────────────────────────────
     # cheetah | walker | quadruped (dm_control)  ;  antmaze (d4rl antmaze-large-diverse-v2)
@@ -328,7 +337,7 @@ if __name__ == '__main__':
         def env_physics(e):
             return e.physics.get_state()
 
-    else:  # antmaze
+    elif ENV_NAME == 'antmaze':
         import gym
         import d4rl   # registers the antmaze environments
 
@@ -403,6 +412,23 @@ if __name__ == '__main__':
                 y = y * block_size * 2 - torso_y + (w - 1) * block_size - w * block_size + 12
                 h, w = h * block_size * 2, w * block_size * 2
                 ax.add_patch(patches.Rectangle((x, y), h, w, linewidth=2, edgecolor='gray', facecolor='gray'))
+
+    else:  # OGBench: antmaze_medium | antmaze_large | cube_single (utils/ogbench_tasks.py; dataset=, ogbench_dir=)
+        from utils.ogbench_tasks import load_ogbench
+        _ogb = load_ogbench(ENV_NAME, kwargs)
+        STATE_DIM, ACTION_DIM = _ogb['state_dim'], _ogb['action_dim']
+        NUM_TRAJECTORIES, TRAJECTORY_LEN = _ogb['num_trajectories'], _ogb['trajectory_len']
+        dataset_obs, dataset_actions = _ogb['obs'], _ogb['actions']
+        dataset_aux = dataset_obs       # rewards are computed from the full observation
+        benchmarks, EVAL_STEPS = _ogb['benchmarks'], _ogb['eval_steps']
+        make_eval_env, env_reset, env_step = _ogb['make_eval_env'], _ogb['env_reset'], _ogb['env_step']
+        del _ogb
+
+        def env_aux(e, state):
+            return state
+
+        def env_physics(e):
+            return None
 
     # ── Task selection: one model per benchmark task ──────────────────────────────
 
@@ -584,6 +610,7 @@ if __name__ == '__main__':
         value_coef:        float = 0.1
         # policy prior noise
         min_std:           float = 0.05
+        bc_coef:           float = 0.0     # behaviour-cloning term of the policy prior (see bc_combine)
         std_clip:          float = 0.3
         # MPPI planning
         iterations:        int   = 6
@@ -752,7 +779,8 @@ if __name__ == '__main__':
                 q1, q2 = self.q(params, hs, a)
                 Q = jnp.minimum(q1, q2)
                 rho = c.rho ** jnp.arange(H + 1, dtype=jnp.float32)
-                return jnp.sum(-Q.mean(axis=(1, 2)) * rho)
+                main = jnp.sum(-Q.mean(axis=(1, 2)) * rho)
+                return bc_combine(main, jnp.mean((a[:H] - action) ** 2), c.bc_coef)
 
             pi_loss, pi_grads = jax.value_and_grad(pi_loss_fn)(ts.pi_params)
             pi_updates, pi_optimizer_state = self.pi_optimizer.update(pi_grads, ts.pi_optimizer_state, ts.pi_params)
@@ -841,7 +869,7 @@ if __name__ == '__main__':
             h = self.encode(ts.params['encoder'], obs)
             return self.pi(ts.pi_params, h, None, 0.0)
 
-    tdmpc_config = TDMPCConfig(batch_size=BATCH_SIZE, horizon=HORIZON)
+    tdmpc_config = TDMPCConfig(batch_size=BATCH_SIZE, horizon=HORIZON, bc_coef=BC_COEF)
     if 'discount' in kwargs:
         tdmpc_config = dataclasses.replace(tdmpc_config, discount=float(kwargs['discount']))
     print(tdmpc_config)
@@ -929,6 +957,8 @@ if __name__ == '__main__':
             xs, ys = eval_obs[:, 16], eval_aux[:, 0]
         elif ENV_NAME == 'quadruped':
             xs, ys = eval_aux[:, 0], eval_aux[:, 3]
+        elif ENV_NAME == 'cube_single':
+            xs, ys = eval_obs[:, 19], eval_obs[:, 20]
         else:  # antmaze
             xs, ys = eval_obs[:, 0], eval_obs[:, 1]
 
@@ -964,6 +994,9 @@ if __name__ == '__main__':
             axs[4].scatter(obs_traj[..., 0], obs_traj[..., 1], c='red', s=5)
             for k in (0, 1, 2, 4):
                 add_largest_maze_walls(axs[k])
+        elif ENV_NAME in ('antmaze_medium', 'antmaze_large', 'cube_single'):
+            ix = (19, 20) if ENV_NAME == 'cube_single' else (0, 1)
+            axs[4].scatter(obs_traj[..., ix[0]], obs_traj[..., ix[1]], c='red', s=2)
 
         axs[0].set_title(f'{TASK}: true reward')
         axs[1].set_title('Reward head reconstruction R(h(s), a)')
@@ -981,7 +1014,7 @@ if __name__ == '__main__':
 
             # same metric as the FB script: sum over the trajectory of the task reward of the visited states
             trajectory_rewards = np.asarray(reward_fn(jnp.asarray(aux_traj, dtype=jnp.float32), reward_param)).sum(axis=-1)
-            if ENV_NAME == 'antmaze' and 'goal' in TASK:
+            if ENV_NAME in ('antmaze', 'antmaze_medium', 'antmaze_large', 'cube_single') and 'goal' in TASK:
                 # goal tasks: 1 if the goal was reached at least once, else 0
                 trajectory_rewards = np.where(trajectory_rewards != -EVAL_STEPS, 1.0, 0.0)
             all_rewards.append(trajectory_rewards)

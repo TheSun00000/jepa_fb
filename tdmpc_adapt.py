@@ -88,7 +88,16 @@ if __name__ == '__main__':
     if MODE == 'adapt':
         assert 'task' in kwargs and 'wm_ckpt' in kwargs, "mode=adapt needs task= and wm_ckpt="
     TASK     = str(kwargs['task']) if MODE == 'adapt' else None
-    assert ENV_NAME in ['cheetah', 'walker', 'quadruped', 'antmaze']
+    assert ENV_NAME in ['cheetah', 'walker', 'quadruped', 'antmaze', 'antmaze_medium', 'antmaze_large', 'cube_single']
+    # Behaviour-cloning regulariser of the policy (OGBench antmaze / cube, as in offline_qd_jax.py): the policy loss is normalised by its own
+    # magnitude and bc_coef * MSE(policy action, dataset action) is added. bc_coef=0 (default): unchanged.
+    BC_COEF = float(kwargs['bc_coef']) if 'bc_coef' in kwargs else 0.0
+
+    def bc_combine(main, bc, coef):
+        if coef == 0:
+            return main
+        return main / (jax.lax.stop_gradient(jnp.abs(main)) + 1e-8) + coef * bc
+
 
     # ── Config ────────────────────────────────────────────────────────────────────
     # cheetah | walker | quadruped (dm_control)  ;  antmaze (d4rl antmaze-large-diverse-v2)
@@ -346,7 +355,7 @@ if __name__ == '__main__':
         def env_physics(e):
             return e.physics.get_state()
 
-    else:  # antmaze
+    elif ENV_NAME == 'antmaze':
         import gym
         import d4rl   # registers the antmaze environments
 
@@ -422,6 +431,23 @@ if __name__ == '__main__':
                 h, w = h * block_size * 2, w * block_size * 2
                 ax.add_patch(patches.Rectangle((x, y), h, w, linewidth=2, edgecolor='gray', facecolor='gray'))
 
+
+    else:  # OGBench: antmaze_medium | antmaze_large | cube_single (utils/ogbench_tasks.py; dataset=, ogbench_dir=)
+        from utils.ogbench_tasks import load_ogbench
+        _ogb = load_ogbench(ENV_NAME, kwargs)
+        STATE_DIM, ACTION_DIM = _ogb['state_dim'], _ogb['action_dim']
+        NUM_TRAJECTORIES, TRAJECTORY_LEN = _ogb['num_trajectories'], _ogb['trajectory_len']
+        dataset_obs, dataset_actions = _ogb['obs'], _ogb['actions']
+        dataset_aux = dataset_obs       # rewards are computed from the full observation
+        benchmarks, EVAL_STEPS = _ogb['benchmarks'], _ogb['eval_steps']
+        make_eval_env, env_reset, env_step = _ogb['make_eval_env'], _ogb['env_reset'], _ogb['env_step']
+        del _ogb
+
+        def env_aux(e, state):
+            return state
+
+        def env_physics(e):
+            return None
 
     # ── Task selection (adapt only) and run settings ──────────────────────────────
 
@@ -597,6 +623,7 @@ if __name__ == '__main__':
         reward_coef:       float = 0.5
         value_coef:        float = 0.1
         min_std:           float = 0.05
+        bc_coef:           float = 0.0     # behaviour-cloning term of the policy prior (see bc_combine)
         std_clip:          float = 0.3
         iterations:        int   = 6
         num_samples:       int   = 512
@@ -769,7 +796,8 @@ if __name__ == '__main__':
                 a = self.pi(pi_params, hs, k_pi, c.min_std)
                 q1, q2 = self.q(params, hs, a)
                 rho = c.rho ** jnp.arange(H + 1, dtype=jnp.float32)
-                return jnp.sum(-jnp.minimum(q1, q2).mean(axis=(1, 2)) * rho)
+                main = jnp.sum(-jnp.minimum(q1, q2).mean(axis=(1, 2)) * rho)
+                return bc_combine(main, jnp.mean((a[:H] - action) ** 2), c.bc_coef)
 
             pi_loss, pi_grads = jax.value_and_grad(pi_loss_fn)(ts.pi_params)
             pi_updates, pi_opt_state = self.pi_optimizer.update(pi_grads, ts.pi_optimizer_state, ts.pi_params)
@@ -806,8 +834,9 @@ if __name__ == '__main__':
             params, opt_state, gnorm = self._masked_step(self.optimizer, grads, ts.optimizer_state, ts.params, ('q1', 'q2'))
 
             def pi_loss_fn(pi_params):
-                q1, q2 = self.q(params, h, self.pi(pi_params, h, k_pi, c.min_std))
-                return -jnp.minimum(q1, q2).mean()
+                a_pi = self.pi(pi_params, h, k_pi, c.min_std)
+                q1, q2 = self.q(params, h, a_pi)
+                return bc_combine(-jnp.minimum(q1, q2).mean(), jnp.mean((a_pi - a) ** 2), c.bc_coef)
 
             pi_loss, pi_grads = jax.value_and_grad(pi_loss_fn)(ts.pi_params)
             pi_updates, pi_opt_state = self.pi_optimizer.update(pi_grads, ts.pi_optimizer_state, ts.pi_params)
@@ -862,7 +891,9 @@ if __name__ == '__main__':
 
             def pi_loss_fn(pi_params):
                 q1, q2 = self.q(params, hs, self.pi(pi_params, hs, k_pi, c.min_std))
-                return -jnp.minimum(q1, q2).mean()
+                # BC on the real labelled (h, a) pairs (the imagined latents have no dataset action)
+                bc = jnp.mean((self.pi(pi_params, h, k_pi, c.min_std) - a) ** 2)
+                return bc_combine(-jnp.minimum(q1, q2).mean(), bc, c.bc_coef)
 
             pi_loss, pi_grads = jax.value_and_grad(pi_loss_fn)(ts.pi_params)
             pi_updates, pi_opt_state = self.pi_optimizer.update(pi_grads, ts.pi_optimizer_state, ts.pi_params)
@@ -945,7 +976,7 @@ if __name__ == '__main__':
             h = self.encode(ts.params['encoder'], obs)
             return self.pi(ts.pi_params, h, None, 0.0)
 
-    adapt_config = AdaptConfig(batch_size=BATCH_SIZE, horizon=HORIZON)
+    adapt_config = AdaptConfig(batch_size=BATCH_SIZE, horizon=HORIZON, bc_coef=BC_COEF)
     for name in ('lr', 'discount', 'consistency_coef', 'var_coef', 'cov_coef'):
         if name in kwargs:
             adapt_config = dataclasses.replace(adapt_config, **{name: float(kwargs[name])})
@@ -1087,7 +1118,7 @@ if __name__ == '__main__':
         for _ in range(num_evals // NUM_EVALS):
             _, aux_traj, _ = rollout_batch(ts, next_eval_key(), mode)
             tr = np.asarray(reward_fn(jnp.asarray(aux_traj, dtype=jnp.float32), reward_param)).sum(axis=-1)
-            if ENV_NAME == 'antmaze' and 'goal' in TASK:
+            if ENV_NAME in ('antmaze', 'antmaze_medium', 'antmaze_large', 'cube_single') and 'goal' in TASK:
                 tr = np.where(tr != -EVAL_STEPS, 1.0, 0.0)
             all_rewards.append(tr)
         tr = np.concatenate(all_rewards)
