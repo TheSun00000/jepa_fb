@@ -591,6 +591,13 @@ if __name__ == '__main__':
     GOAL_MIN_DIST = float(kwargs['goal_min_dist']) if 'goal_min_dist' in kwargs else None
     PAIR_SEED = int(kwargs.get('pair_seed', 0))
     assert not FBGOAL_K or (EVAL_CKPT and ENV_NAME in OGBENCH_ENVS), 'fbgoal_k needs eval_ckpt= and an OGBench env'
+    # fbgoal_official=1 (eval_ckpt, OGBench): the same evaluation on the 5 official tasks: goal_n_task (default 10) episodes per task,
+    # each from the task's own start, z = sqrt(d) normalize(B(goal observation of OGBench's reset)), goal_budget steps (default: the
+    # official episode length). One fbgoal_log.csv row per mode for all tasks ('official') and one per task.
+    FBGOAL_OFFICIAL = str(kwargs.get('fbgoal_official', '0')).lower() in ('1', 'true')
+    GOAL_N_TASK = int(kwargs.get('goal_n_task', 10))
+    assert not (FBGOAL_K and FBGOAL_OFFICIAL), 'fbgoal_k and fbgoal_official are exclusive'
+    assert not FBGOAL_OFFICIAL or (EVAL_CKPT and ENV_NAME in OGBENCH_ENVS), 'fbgoal_official needs eval_ckpt= and an OGBench env'
     # Number of benchmark tasks rolled out in parallel during eval (each one needs NUM_EVALS env instances)
     EVAL_CHUNK = int(kwargs['eval_chunk']) if 'eval_chunk' in kwargs else N_BENCH
 
@@ -1573,39 +1580,60 @@ if __name__ == '__main__':
         restored = serialization.from_state_dict({k: getattr(train_state, k) for k in keys}, loaded)
         train_state = train_state.replace(**restored)
         print('loaded', EVAL_CKPT, '| z from', Z_LABELS, 'labelled states')
-        if FBGOAL_K:   # goal reaching on near-goal pairs with z = B(goal state), see FBGOAL_K above
+        if FBGOAL_K or FBGOAL_OFFICIAL:   # goal reaching with z = B(goal state), see FBGOAL_K / FBGOAL_OFFICIAL above
             from utils.ogbench_tasks import (sample_goal_pairs, describe_goal_pairs, write_goal_pairs, reset_to_goal_pair,
-                                             default_goal_tol)
-            P = sample_goal_pairs(ENV_NAME, ogb_name, OGB_DIR, FBGOAL_K, GOAL_N, GOAL_SPLIT, GOAL_MIN_DIST, PAIR_SEED)
-            print(describe_goal_pairs(P))
-            write_goal_pairs(f'{LOGS_FOLDER}/goal_pairs.csv', P)
+                                             default_goal_tol, goal_coords)
+            g_coords = goal_coords(ENV_NAME)
             tol = default_goal_tol(ENV_NAME) if GOAL_TOL is None else GOAL_TOL
+            if FBGOAL_K:
+                P = sample_goal_pairs(ENV_NAME, ogb_name, OGB_DIR, FBGOAL_K, GOAL_N, GOAL_SPLIT, GOAL_MIN_DIST, PAIR_SEED)
+                print(describe_goal_pairs(P))
+                write_goal_pairs(f'{LOGS_FOLDER}/goal_pairs.csv', P)
+                n_env, budget, tag = GOAL_N, GOAL_BUDGET, f'goal_k{FBGOAL_K}'
+                labels = [tag] * n_env
+
+                def reset_all(envs):    # (states, goal observations, reset error); the pairs are fixed
+                    states = [reset_to_goal_pair(e, ENV_NAME, P['start_qpos'][i], P['start_qvel'][i], P['goal_coord'][i])
+                              for i, e in enumerate(envs)]
+                    return states, P['goal_obs'], np.abs(np.stack(states) - P['start_obs']).max(axis=-1)
+            else:
+                # the official tasks: start of task t, goal = OGBench's goal observation (fresh start and goal noise at every reset)
+                n_env, budget, tag = 5 * GOAL_N_TASK, int(kwargs.get('goal_budget', EVAL_STEPS)), 'official'
+                labels = [f'goal_{t}' for t in range(1, 6) for _ in range(GOAL_N_TASK)]
+
+                def reset_all(envs):
+                    out = [e.reset(options=dict(task_id=int(l.split('_')[1]))) for e, l in zip(envs, labels)]
+                    return ([np.asarray(o[0]) for o in out], np.stack([np.asarray(o[1]['goal'], dtype=np.float32) for o in out]),
+                            np.zeros(len(out)))
             enc, b_par = train_state.params['encoder'], train_state.b_params
             cov_obs = replay_buffer.sample(next_eval_key(), Z_COV_STATES)[0]          # E[B B^T] needs no label
-            zs_l, ws_l = [], []
-            for i in range(GOAL_N):    # single labelled state with reward 1: E[B R] = B(goal), z = sqrt(d) normalize(B(goal))
-                z_i, w_i, _ = agent.infer_zw(enc, b_par, jnp.asarray(P['goal_obs'][i:i + 1]), jnp.ones((1,)), Z_RIDGE, cov_obs)
-                zs_l.append(z_i); ws_l.append(w_i)
-            zs_g = jnp.stack(zs_l)
-            ws_g = jnp.stack(ws_l) if MPPI_REWARD == 'lstsq' else zs_g
-            while len(eval_envs) < GOAL_N:
+
+            def goal_task_vectors(goal_obs):   # single labelled state with reward 1: E[B R] = B(goal), z = sqrt(d) normalize(B(goal))
+                zs_l, ws_l = [], []
+                for i in range(len(goal_obs)):
+                    z_i, w_i, _ = agent.infer_zw(enc, b_par, jnp.asarray(goal_obs[i:i + 1]), jnp.ones((1,)), Z_RIDGE, cov_obs)
+                    zs_l.append(z_i); ws_l.append(w_i)
+                zs_ = jnp.stack(zs_l)
+                return zs_, (jnp.stack(ws_l) if MPPI_REWARD == 'lstsq' else zs_)
+
+            while len(eval_envs) < n_env:
                 eval_envs.append(make_eval_env())
-            envs = eval_envs[:GOAL_N]
-            gl_fields = ['mode', 'goal_k', 'goal_n', 'goal_budget', 'goal_tol', 'horizon', 'success', 'success_std', 'gdist_start',
+            envs = eval_envs[:n_env]
+            gl_fields = ['mode', 'task', 'goal_k', 'n', 'goal_budget', 'goal_tol', 'horizon', 'success', 'success_std', 'gdist_start',
                          'gdist_end', 'gdist_min', 'reset_err', 'time']
             gl = CSVLogger(f"{LOGS_FOLDER}/fbgoal_log.csv", gl_fields)
-            ge = CSVLogger(f"{LOGS_FOLDER}/fbgoal_episodes.csv", ['mode', 'episode', 'success', 'gdist_start', 'gdist_end', 'gdist_min',
-                                                                  'reset_err'])
+            ge = CSVLogger(f"{LOGS_FOLDER}/fbgoal_episodes.csv", ['mode', 'task', 'episode', 'success', 'gdist_start', 'gdist_end',
+                                                                  'gdist_min', 'reset_err'])
             for mode in EVAL_MODES:
                 t0 = time.time()
-                states = [reset_to_goal_pair(e, ENV_NAME, P['start_qpos'][i], P['start_qvel'][i], P['goal_coord'][i])
-                          for i, e in enumerate(envs)]
-                reset_err = np.abs(np.stack(states) - P['start_obs']).max(axis=-1)
-                prev_mean = jnp.zeros((GOAL_N, tdmpc_config.horizon, ACTION_DIM))
+                states, goal_obs, reset_err = reset_all(envs)
+                goal_coord = goal_obs[:, g_coords]
+                zs_g, ws_g = goal_task_vectors(goal_obs)
+                prev_mean = jnp.zeros((n_env, tdmpc_config.horizon, ACTION_DIM))
                 key, coords = next_eval_key(), []
-                for step in tqdm(range(GOAL_BUDGET), leave=False):   # states before each action, as in wm_goal.py
+                for step in tqdm(range(budget), leave=False):   # states before each action, as in wm_goal.py
                     obs = np.stack(states).astype(np.float32)
-                    coords.append(obs[:, P['coords']])
+                    coords.append(obs[:, g_coords])
                     if mode == 'policy':
                         actions = agent.act_policy_batch(train_state, jnp.asarray(obs), zs_g)
                     else:
@@ -1613,18 +1641,23 @@ if __name__ == '__main__':
                         actions, prev_mean, _ = agent.plan_batch(train_state, jnp.asarray(obs), zs_g, ws_g, prev_mean,
                                                                  jnp.asarray(step > 0), sub)
                     states = [env_step(e, a) for e, a in zip(envs, np.asarray(actions))]
-                gdist = np.linalg.norm(np.stack(coords) - P['goal_coord'][None], axis=-1).T             # (GOAL_N, T)
+                gdist = np.linalg.norm(np.stack(coords) - goal_coord[None], axis=-1).T                  # (n_env, T)
                 succ = (gdist <= tol).any(axis=-1).astype(np.float64)
-                gl.log({'mode': mode, 'goal_k': FBGOAL_K, 'goal_n': GOAL_N, 'goal_budget': GOAL_BUDGET, 'goal_tol': tol,
-                        'horizon': tdmpc_config.horizon, 'success': float(succ.mean()), 'success_std': float(succ.std(ddof=1)),
-                        'gdist_start': float(gdist[:, 0].mean()), 'gdist_end': float(gdist[:, -1].mean()),
-                        'gdist_min': float(gdist.min(axis=-1).mean()), 'reset_err': float(reset_err.mean()), 'time': time.time() - t0})
-                for i in range(GOAL_N):
-                    ge.log({'mode': mode, 'episode': i, 'success': float(succ[i]), 'gdist_start': float(gdist[i, 0]),
+                groups = [(tag, np.arange(n_env))] + ([(l, np.array([i for i, x in enumerate(labels) if x == l]))
+                                                       for l in sorted(set(labels))] if FBGOAL_OFFICIAL else [])
+                for name, ix in groups:   # one row for all episodes, plus one per official task
+                    gl.log({'mode': mode, 'task': name, 'goal_k': FBGOAL_K, 'n': len(ix), 'goal_budget': budget, 'goal_tol': tol,
+                            'horizon': tdmpc_config.horizon, 'success': float(succ[ix].mean()),
+                            'success_std': float(succ[ix].std(ddof=1)) if len(ix) > 1 else 0.0,
+                            'gdist_start': float(gdist[ix, 0].mean()), 'gdist_end': float(gdist[ix, -1].mean()),
+                            'gdist_min': float(gdist[ix].min(axis=-1).mean()), 'reset_err': float(reset_err[ix].mean()),
+                            'time': time.time() - t0})
+                    print(f'fbgoal {name} [{MODE_NAMES[mode]}]: success {succ[ix].mean():.2f} ({int(succ[ix].sum())}/{len(ix)}) | goal '
+                          f'distance start {gdist[ix, 0].mean():.3f} min {gdist[ix].min(axis=-1).mean():.3f} end '
+                          f'{gdist[ix, -1].mean():.3f} | reset error {reset_err[ix].mean():.2e}')
+                for i in range(n_env):
+                    ge.log({'mode': mode, 'task': labels[i], 'episode': i, 'success': float(succ[i]), 'gdist_start': float(gdist[i, 0]),
                             'gdist_end': float(gdist[i, -1]), 'gdist_min': float(gdist[i].min()), 'reset_err': float(reset_err[i])})
-                print(f'fbgoal_k={FBGOAL_K} [{MODE_NAMES[mode]}]: success {succ.mean():.2f} ({int(succ.sum())}/{GOAL_N}) | goal distance '
-                      f'start {gdist[:, 0].mean():.3f} min {gdist.min(axis=-1).mean():.3f} end {gdist[:, -1].mean():.3f} | '
-                      f'reset error {reset_err.mean():.2e}')
             print('wrote', f"{LOGS_FOLDER}/fbgoal_log.csv")
             mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
             sys.exit(0)
