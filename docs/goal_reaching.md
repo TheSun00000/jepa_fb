@@ -68,7 +68,7 @@ DINO-WM: `wm_baselines.py planner=mppi plan_horizon=1` (one 5-step block, replan
 
 Mazes: the FBWM latent is the best distance cost, 2-3x every other latent (raw state included). Cube: it is the worst at K=10, and
 the CEM-vs-MPPI gap of LeWM / DINO-WM (14 -> 43, 13 -> 30) confirms that JEPA's earlier cube lead was the planner.
-Runs: `hpc/logs/2026-11-21_23-3*_WMBASE-*-mppi-*`; all cells with `python tools/goal_results.py --runs`.
+Runs: `hpc/logs/2026-11-21_23-*_WMBASE-*-mppi-*`; all cells with `python tools/goal_results.py --runs`.
 
 **(B) Reference: published baselines with their own planner** (CEM, 25-step plans run open loop). Planner and latent both differ
 from (A), so these rows are not a test of the latent.
