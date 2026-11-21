@@ -574,6 +574,23 @@ if __name__ == '__main__':
     # diag_profile=1 (eval_ckpt): time profile of real episodes (policy and MPPI): true reward, aux and, on cheetah, the torso pitch,
     # per 200-step segment (diag_profile.csv). Then exit.
     DIAG_PROFILE = str(kwargs.get('diag_profile', '0')).lower() in ('1', 'true')
+    # fbgoal_k=K (eval_ckpt, OGBench, 2026-11-22): goal reaching on the near-goal pairs of wm_goal.py goal_k=K (the same pairs for the
+    # same goal_n / goal_split / goal_min_dist / pair_seed / dataset: utils/ogbench_tasks.sample_goal_pairs). Pair i = dataset state s_t,
+    # goal s_{t+K} of the same trajectory; the simulator starts at the stored (qpos, qvel) of s_t. Task vector of the goal STATE (FB's
+    # goal reaching, the reward concentrated at s_{t+K}): z_i = sqrt(d) normalize(B(s_{t+K})); w_i = the lstsq per-step weights of
+    # that z (E[B B^T] on Z_COV_STATES unlabelled dataset states, whatever z_cov=). Then each eval mode (mppi: the usual planner with
+    # per-step reward g(h)^T w (mppi_reward=lstsq) or g(h)^T z, terminal F^T z, policy samples, mppi_root_check; policy: the actor
+    # pi(phi(s), z_i) alone) for goal_budget steps (default 2K). Success: the goal coordinates (antmaze (x, y), cube block) come within
+    # goal_tol (OGBench: 0.5 | 0.4 = 0.04 m) of those of s_{t+K} at any step. Writes fbgoal_log.csv (one row per mode),
+    # fbgoal_episodes.csv, goal_pairs.csv, then exits.
+    FBGOAL_K = int(kwargs.get('fbgoal_k', 0))
+    GOAL_N = int(kwargs.get('goal_n', 50))
+    GOAL_SPLIT = str(kwargs.get('goal_split', 'val'))
+    GOAL_BUDGET = int(kwargs.get('goal_budget', 2 * FBGOAL_K))
+    GOAL_TOL = float(kwargs['goal_tol']) if 'goal_tol' in kwargs else None          # default: OGBench's radius
+    GOAL_MIN_DIST = float(kwargs['goal_min_dist']) if 'goal_min_dist' in kwargs else None
+    PAIR_SEED = int(kwargs.get('pair_seed', 0))
+    assert not FBGOAL_K or (EVAL_CKPT and ENV_NAME in OGBENCH_ENVS), 'fbgoal_k needs eval_ckpt= and an OGBench env'
     # Number of benchmark tasks rolled out in parallel during eval (each one needs NUM_EVALS env instances)
     EVAL_CHUNK = int(kwargs['eval_chunk']) if 'eval_chunk' in kwargs else N_BENCH
 
@@ -1556,6 +1573,61 @@ if __name__ == '__main__':
         restored = serialization.from_state_dict({k: getattr(train_state, k) for k in keys}, loaded)
         train_state = train_state.replace(**restored)
         print('loaded', EVAL_CKPT, '| z from', Z_LABELS, 'labelled states')
+        if FBGOAL_K:   # goal reaching on near-goal pairs with z = B(goal state), see FBGOAL_K above
+            from utils.ogbench_tasks import (sample_goal_pairs, describe_goal_pairs, write_goal_pairs, reset_to_goal_pair,
+                                             default_goal_tol)
+            P = sample_goal_pairs(ENV_NAME, ogb_name, OGB_DIR, FBGOAL_K, GOAL_N, GOAL_SPLIT, GOAL_MIN_DIST, PAIR_SEED)
+            print(describe_goal_pairs(P))
+            write_goal_pairs(f'{LOGS_FOLDER}/goal_pairs.csv', P)
+            tol = default_goal_tol(ENV_NAME) if GOAL_TOL is None else GOAL_TOL
+            enc, b_par = train_state.params['encoder'], train_state.b_params
+            cov_obs = replay_buffer.sample(next_eval_key(), Z_COV_STATES)[0]          # E[B B^T] needs no label
+            zs_l, ws_l = [], []
+            for i in range(GOAL_N):    # single labelled state with reward 1: E[B R] = B(goal), z = sqrt(d) normalize(B(goal))
+                z_i, w_i, _ = agent.infer_zw(enc, b_par, jnp.asarray(P['goal_obs'][i:i + 1]), jnp.ones((1,)), Z_RIDGE, cov_obs)
+                zs_l.append(z_i); ws_l.append(w_i)
+            zs_g = jnp.stack(zs_l)
+            ws_g = jnp.stack(ws_l) if MPPI_REWARD == 'lstsq' else zs_g
+            while len(eval_envs) < GOAL_N:
+                eval_envs.append(make_eval_env())
+            envs = eval_envs[:GOAL_N]
+            gl_fields = ['mode', 'goal_k', 'goal_n', 'goal_budget', 'goal_tol', 'horizon', 'success', 'success_std', 'gdist_start',
+                         'gdist_end', 'gdist_min', 'reset_err', 'time']
+            gl = CSVLogger(f"{LOGS_FOLDER}/fbgoal_log.csv", gl_fields)
+            ge = CSVLogger(f"{LOGS_FOLDER}/fbgoal_episodes.csv", ['mode', 'episode', 'success', 'gdist_start', 'gdist_end', 'gdist_min',
+                                                                  'reset_err'])
+            for mode in EVAL_MODES:
+                t0 = time.time()
+                states = [reset_to_goal_pair(e, ENV_NAME, P['start_qpos'][i], P['start_qvel'][i], P['goal_coord'][i])
+                          for i, e in enumerate(envs)]
+                reset_err = np.abs(np.stack(states) - P['start_obs']).max(axis=-1)
+                prev_mean = jnp.zeros((GOAL_N, tdmpc_config.horizon, ACTION_DIM))
+                key, coords = next_eval_key(), []
+                for step in tqdm(range(GOAL_BUDGET), leave=False):   # states before each action, as in wm_goal.py
+                    obs = np.stack(states).astype(np.float32)
+                    coords.append(obs[:, P['coords']])
+                    if mode == 'policy':
+                        actions = agent.act_policy_batch(train_state, jnp.asarray(obs), zs_g)
+                    else:
+                        key, sub = jax.random.split(key)
+                        actions, prev_mean, _ = agent.plan_batch(train_state, jnp.asarray(obs), zs_g, ws_g, prev_mean,
+                                                                 jnp.asarray(step > 0), sub)
+                    states = [env_step(e, a) for e, a in zip(envs, np.asarray(actions))]
+                gdist = np.linalg.norm(np.stack(coords) - P['goal_coord'][None], axis=-1).T             # (GOAL_N, T)
+                succ = (gdist <= tol).any(axis=-1).astype(np.float64)
+                gl.log({'mode': mode, 'goal_k': FBGOAL_K, 'goal_n': GOAL_N, 'goal_budget': GOAL_BUDGET, 'goal_tol': tol,
+                        'horizon': tdmpc_config.horizon, 'success': float(succ.mean()), 'success_std': float(succ.std(ddof=1)),
+                        'gdist_start': float(gdist[:, 0].mean()), 'gdist_end': float(gdist[:, -1].mean()),
+                        'gdist_min': float(gdist.min(axis=-1).mean()), 'reset_err': float(reset_err.mean()), 'time': time.time() - t0})
+                for i in range(GOAL_N):
+                    ge.log({'mode': mode, 'episode': i, 'success': float(succ[i]), 'gdist_start': float(gdist[i, 0]),
+                            'gdist_end': float(gdist[i, -1]), 'gdist_min': float(gdist[i].min()), 'reset_err': float(reset_err[i])})
+                print(f'fbgoal_k={FBGOAL_K} [{MODE_NAMES[mode]}]: success {succ.mean():.2f} ({int(succ.sum())}/{GOAL_N}) | goal distance '
+                      f'start {gdist[:, 0].mean():.3f} min {gdist.min(axis=-1).mean():.3f} end {gdist[:, -1].mean():.3f} | '
+                      f'reset error {reset_err.mean():.2e}')
+            print('wrote', f"{LOGS_FOLDER}/fbgoal_log.csv")
+            mark_finished(f'{LOGS_FOLDER}/info.txt', 0)
+            sys.exit(0)
         if DIAG_F:
             # F and B on the imagined latents h_hat_t (rolled out from phi(s_0) with the dataset actions) vs on phi(s_t), t = 1..H,
             # for each task's inferred z: corr and relative RMSE of F^T z (with pi's action on each side), cos(g(h_hat_t), B(s_t)).

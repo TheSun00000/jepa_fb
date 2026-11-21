@@ -418,16 +418,7 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
         ogb_name, EVAL_STEPS = f"cube-single-{kwargs.get('dataset', 'play')}-v0", 200            # official episode length
     else:
         ogb_name, EVAL_STEPS = f"antmaze-{ENV_NAME.split('_')[1]}-{kwargs.get('dataset', 'explore')}-v0", 1000
-    if GOAL_K == 0:
-        _env0 = ogbench.make_env_and_datasets(ogb_name, env_only=True)
-    else:
-        import mujoco
-        OGB_DIR = os.path.expanduser(kwargs.get('ogbench_dir', '~/.ogbench/data'))
-        # add_info: the stored (qpos, qvel) of every state, to reset the simulator to it (the cube observation is not the full state)
-        _env0, _ds_train, _ds_val = ogbench.make_env_and_datasets(ogb_name, dataset_dir=OGB_DIR, compact_dataset=True, add_info=True)
-        _ds = _ds_val if GOAL_SPLIT == 'val' else _ds_train
-        del _ds_train, _ds_val
-        assert 'qpos' in _ds and 'qvel' in _ds, f'{ogb_name}: the dataset file has no qpos / qvel'
+    _env0 = ogbench.make_env_and_datasets(ogb_name, env_only=True)
     STATE_DIM = _env0.observation_space.shape[0]
     assert _env0.action_space.shape[0] == ACTION_DIM, f'env action dim {_env0.action_space.shape[0]} != checkpoint {ACTION_DIM}'
     task_infos = _env0.unwrapped.task_infos
@@ -444,32 +435,16 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
                     _w.writerow([_i, _j, _j * _u._maze_unit - _u._offset_x, _i * _u._maze_unit - _u._offset_y,
                                  int(_u.maze_map[_i, _j]), _u._maze_unit])
     if GOAL_K > 0:
-        # GOAL_N pairs (s_t, s_{t+K}) of the same trajectory, drawn with pair_seed only. Compact dataset: trajectories are stored back to
-        # back and 'valids' is 0 on the last row of each one.
-        _obs = np.asarray(_ds['observations'], dtype=np.float32)
-        _end = (np.asarray(_ds['valids']) == 0).astype(np.int64)
-        _ep = np.cumsum(_end) - _end                                       # trajectory id of every row
-        _t = np.arange(len(_obs) - GOAL_K)
-        _t = _t[_ep[_t] == _ep[_t + GOAL_K]]                               # start rows whose state K steps later is in the same trajectory
-        _disp = np.linalg.norm(_obs[_t + GOAL_K, GOAL_COORDS] - _obs[_t, GOAL_COORDS], axis=-1)
-        _cand = _t[_disp >= GOAL_MIN_DIST]
-        print(f'goal_k={GOAL_K} ({GOAL_SPLIT} file): {len(_cand)} of {len(_t)} start states have a goal displacement >= {GOAL_MIN_DIST} '
-              f'(displacement of all pairs: median {np.median(_disp):.3f}, 90th percentile {np.percentile(_disp, 90):.3f})')
-        assert len(_cand) >= GOAL_N, f'only {len(_cand)} pairs with a goal displacement >= {GOAL_MIN_DIST} at goal_k={GOAL_K}'
-        _pick = np.sort(np.random.default_rng(PAIR_SEED).choice(_cand, GOAL_N, replace=False))
-        START_OBS, GOAL_OBS = _obs[_pick], _obs[_pick + GOAL_K]
-        START_QPOS = np.asarray(_ds['qpos'])[_pick].astype(np.float64)
-        START_QVEL = np.asarray(_ds['qvel'])[_pick].astype(np.float64)
-        GOAL_COORD = GOAL_OBS[:, GOAL_COORDS].copy()                        # (GOAL_N, 2) antmaze (x, y) | (GOAL_N, 3) cube block
+        # GOAL_N pairs (s_t, s_{t+K}) of the same trajectory, drawn with pair_seed only (utils/ogbench_tasks.py, shared with fbwm.py fbgoal_k)
+        from utils.ogbench_tasks import sample_goal_pairs, describe_goal_pairs, write_goal_pairs, reset_to_goal_pair
+        OGB_DIR = os.path.expanduser(kwargs.get('ogbench_dir', '~/.ogbench/data'))
+        PAIRS = sample_goal_pairs(ENV_NAME, ogb_name, OGB_DIR, GOAL_K, GOAL_N, GOAL_SPLIT, GOAL_MIN_DIST, PAIR_SEED)
+        print(describe_goal_pairs(PAIRS))
+        write_goal_pairs(f'{LOGS_FOLDER}/goal_pairs.csv', PAIRS)
+        assert PAIRS['coords'] == GOAL_COORDS
+        START_OBS, GOAL_OBS, GOAL_COORD = PAIRS['start_obs'], PAIRS['goal_obs'], PAIRS['goal_coord']
         benchmarks = [(None, f'goal_k{GOAL_K}', None)]                      # one task, one pair per episode
         NUM_EVALS, EVAL_STEPS = GOAL_N, GOAL_BUDGET
-        with open(f'{LOGS_FOLDER}/goal_pairs.csv', 'w', newline='') as _f:
-            _w = csv.writer(_f)
-            _w.writerow(['episode', 'dataset_index', 'trajectory', 'k', 'start_coords', 'goal_coords', 'displacement'])
-            for _e, _i in enumerate(_pick):
-                _w.writerow([_e, int(_i), int(_ep[_i]), GOAL_K, ' '.join(f'{v:.4f}' for v in _obs[_i, GOAL_COORDS]),
-                             ' '.join(f'{v:.4f}' for v in GOAL_COORD[_e]), float(np.linalg.norm(GOAL_COORD[_e] - _obs[_i, GOAL_COORDS]))])
-        del _ds, _obs
     del _env0
 
     def make_eval_env():
@@ -479,24 +454,10 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
         if GOAL_K == 0:
             ob, info = e.reset(options=dict(task_id=task_idx + 1))     # the task's own initial state; info['goal'] = the goal observation
             return np.asarray(ob), np.asarray(info['goal'])
-        # goal_k: the simulator is set to the stored state s_t of pair ep_idx; the goal observation is s_{t+K}
-        e.reset(options=dict(task_id=1))                               # any task: the state is overwritten below
-        u = e.unwrapped
-        if ENV_NAME == 'cube_single':
-            assert u._data.qpos.shape == START_QPOS[ep_idx].shape, (u._data.qpos.shape, START_QPOS[ep_idx].shape)
-            u._data.qpos[:] = START_QPOS[ep_idx]
-            u._data.qvel[:] = START_QVEL[ep_idx]
-            # OGBench's own success flag (block within 0.04 m of the target mocap) then refers to this goal; obs = (x - 0.425, y, z) * 10
-            u._data.mocap_pos[u._cube_target_mocap_ids[0]] = GOAL_COORD[ep_idx] / 10.0 + np.array([0.425, 0.0, 0.0])
-            mujoco.mj_forward(u._model, u._data)
-            u.pre_step()
-            u.post_step()
-            ob = u.compute_observation()
-        else:
-            u.set_state(START_QPOS[ep_idx], START_QVEL[ep_idx])
-            u.set_goal(goal_xy=GOAL_COORD[ep_idx])                     # OGBench's own success flag (0.5) then refers to this goal
-            ob = u.get_ob()
-        return np.asarray(ob), GOAL_OBS[ep_idx]
+        # goal_k: the simulator is set to the stored state s_t of pair ep_idx (OGBench's own success flag then refers to its goal);
+        # the goal observation is s_{t+K}
+        ob = reset_to_goal_pair(e, ENV_NAME, PAIRS['start_qpos'][ep_idx], PAIRS['start_qvel'][ep_idx], GOAL_COORD[ep_idx])
+        return ob, GOAL_OBS[ep_idx]
 
     def env_step(e, action):
         ob, _, _, _, info = e.step(action)
