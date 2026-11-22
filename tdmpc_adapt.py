@@ -5,7 +5,8 @@
 
 pretrain: TD-MPC v1 encoder and residual dynamics (same networks and sphere-projected latent as tdmpc_jax.py), trained with
 the latent consistency loss (EMA target encoder, H-step rollout) plus VICReg variance / covariance terms on the encoded latents
-(anti-collapse). Saves wm_final.pickle.
+(anti-collapse). Saves wm_final.pickle. encoder=phimap (2026-11-22): the encoder is fbwm.py's gphi trunk PhiMap (hidden width enc_dim, default
+256) instead of the TD-MPC MLP, so the JEPA WM and FBWM gphi (phi_hidden_dim=256) share the encoder; run folder JEPAWM-phimap-<env>.
 adapt: loads and freezes the encoder and dynamics. q_data=labeled: Q / policy from the N labelled (s, a, r, s') only, true r,
 one-step TD (no dataset access at adaptation time; run folder TDMPC-adaptL-...). Otherwise: (1) fits a reward head R(h, a) on n_labels labelled transitions, (2) trains
 Q1, Q2 and the policy prior with TD-MPC's value / policy losses for adapt_steps updates, with rewards from that head,
@@ -92,6 +93,20 @@ if __name__ == '__main__':
     # Behaviour-cloning regulariser of the policy (OGBench antmaze / cube, as in offline_qd_jax.py): the policy loss is normalised by its own
     # magnitude and bc_coef * MSE(policy action, dataset action) is added. bc_coef=0 (default): unchanged.
     BC_COEF = float(kwargs['bc_coef']) if 'bc_coef' in kwargs else 0.0
+    # encoder=mlp|phimap (2026-11-22, same-encoder comparison with FBWM gphi): mlp (default) = the TD-MPC encoder Linear-ELU-Linear-ELU-Linear
+    # (orthogonal init); phimap = fbwm.py's gphi trunk PhiMap, Linear -> LayerNorm+Tanh -> Linear -> ReLU -> Linear (torch init), copied
+    # verbatim so the parameter names match. Hidden width enc_dim (default 256) for both. mode=adapt reads the encoder type and width from wm_ckpt.
+    ENCODER = str(kwargs.get('encoder', 'mlp'))
+    assert ENCODER in ('mlp', 'phimap'), "encoder=mlp|phimap"
+    ENC_DIM = int(kwargs['enc_dim']) if 'enc_dim' in kwargs else 256
+    if MODE == 'adapt':
+        with open(kwargs['wm_ckpt'], 'rb') as f:
+            _wm_enc = pickle.load(f)['encoder']
+        _ckpt_encoder = 'phimap' if 'TorchDense_0' in _wm_enc else 'mlp'
+        assert 'encoder' not in kwargs or ENCODER == _ckpt_encoder, f"encoder={ENCODER} but wm_ckpt has a {_ckpt_encoder} encoder"
+        ENCODER = _ckpt_encoder
+        ENC_DIM = int(_wm_enc['TorchDense_0' if ENCODER == 'phimap' else 'Dense_0']['kernel'].shape[1])
+        del _wm_enc
 
     def bc_combine(main, bc, coef):
         if coef == 0:
@@ -107,7 +122,7 @@ if __name__ == '__main__':
     now = datetime.now()
     date_time_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
-    exp_name = (f'JEPAWM-{ENV_NAME}' if MODE == 'pretrain' else
+    exp_name = (f'JEPAWM{"-phimap" if ENCODER == "phimap" else ""}-{ENV_NAME}' if MODE == 'pretrain' else
                 f'TDMPC-adapt{ {"labeled": "L", "labeled_model": "LM"}.get(kwargs.get("q_data"), "")}-{ENV_NAME}-{TASK}')   # adaptL / adaptLM: no dataset access
 
     while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
@@ -583,6 +598,40 @@ if __name__ == '__main__':
             return nn.Dense(self.out_dim, kernel_init=nn.initializers.zeros if self.zero_last else orth_init,
                             bias_init=nn.initializers.zeros)(x)
 
+    class TorchDense(nn.Module):
+        """nn.Dense with torch's default nn.Linear init: U(-1/sqrt(fan_in), 1/sqrt(fan_in)) for W and b (copied from fbwm.py)."""
+        features: int
+
+        @nn.compact
+        def __call__(self, x):
+            fan_in = x.shape[-1]
+            bound  = 1.0 / math.sqrt(fan_in)
+            init   = lambda key, shape, dtype=jnp.float32: jax.random.uniform(key, shape, dtype, -bound, bound)
+            kernel = self.param('kernel', init, (fan_in, self.features))
+            bias   = self.param('bias', init, (self.features,))
+            return x @ kernel + bias
+
+    class NTanh(nn.Module):
+        """FB 'ntanh': LayerNorm followed by Tanh (copied from fbwm.py)."""
+        @nn.compact
+        def __call__(self, x):
+            return jnp.tanh(nn.LayerNorm(epsilon=1e-5)(x))
+
+    class PhiMap(nn.Module):
+        """fbwm.py's gphi trunk (encoder=phimap): Linear -> NTanh -> [Linear -> relu] x (num_layers - 1) -> Linear (copied from fbwm.py)."""
+        hidden_dim: int  = 64
+        out_dim:    int  = 50
+        num_layers: int  = 2
+        ntanh:      bool = True
+
+        @nn.compact
+        def __call__(self, obs):
+            x = TorchDense(self.hidden_dim)(obs)
+            x = NTanh()(x) if self.ntanh else nn.relu(x)
+            for _ in range(self.num_layers - 1):
+                x = nn.relu(TorchDense(self.hidden_dim)(x))
+            return TorchDense(self.out_dim)(x)
+
     class QNet(nn.Module):
         """TD-MPC `q`: Linear -> LayerNorm -> Tanh -> Linear -> ELU -> Linear(1); last layer starts at zero."""
         mlp_dim: int
@@ -617,6 +666,7 @@ if __name__ == '__main__':
         batch_size:        int   = 512
         latent_dim:        int   = 50
         enc_dim:           int   = 256
+        encoder:           str   = 'mlp'    # mlp: TD-MPC encoder; phimap: fbwm.py's gphi trunk (see encoder=)
         mlp_dim:           int   = 512
         horizon:           int   = 5
         rho:               float = 0.5
@@ -653,7 +703,8 @@ if __name__ == '__main__':
             self.cfg, self.obs_dim, self.action_dim = config, obs_dim, action_dim
             c = config
             mlp = (c.mlp_dim, c.mlp_dim)
-            self.encoder    = MLP(hidden=(c.enc_dim, c.enc_dim), out_dim=c.latent_dim)
+            self.encoder    = (PhiMap(c.enc_dim, c.latent_dim) if c.encoder == 'phimap' else
+                               MLP(hidden=(c.enc_dim, c.enc_dim), out_dim=c.latent_dim))
             self.dynamics   = MLP(hidden=mlp, out_dim=c.latent_dim)
             self.reward_net = MLP(hidden=mlp, out_dim=1, zero_last=True)
             self.pi_net     = MLP(hidden=mlp, out_dim=action_dim)
@@ -980,10 +1031,12 @@ if __name__ == '__main__':
             h = self.encode(ts.params['encoder'], obs)
             return self.pi(ts.pi_params, h, None, 0.0)
 
-    adapt_config = AdaptConfig(batch_size=BATCH_SIZE, horizon=HORIZON, bc_coef=BC_COEF)
+    adapt_config = AdaptConfig(batch_size=BATCH_SIZE, horizon=HORIZON, bc_coef=BC_COEF, encoder=ENCODER, enc_dim=ENC_DIM)
     for name in ('lr', 'discount', 'consistency_coef', 'var_coef', 'cov_coef'):
         if name in kwargs:
             adapt_config = dataclasses.replace(adapt_config, **{name: float(kwargs[name])})
+    if 'update_freq' in kwargs:     # 2026-11-22: EMA target every update_freq updates (default 2; FBWM uses 1)
+        adapt_config = dataclasses.replace(adapt_config, update_freq=int(kwargs['update_freq']))
     print(adapt_config)
     with open(f'{LOGS_FOLDER}/info.txt', 'a') as file:
         file.write(str(adapt_config) + '\n')

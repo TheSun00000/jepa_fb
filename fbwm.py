@@ -107,6 +107,15 @@ if __name__ == '__main__':
     FREEZE_WM = str(kwargs['freeze_wm']).lower() in ('1', 'true', 'yes') if 'freeze_wm' in kwargs else False
     assert FREEZE_WM == (WM_CKPT is not None), "wm_ckpt= and freeze_wm=true go together"
     assert not (FREEZE_WM and (PHI_IDENTITY or VARIANT != 'gphi')), "freeze_wm is a gphi option (no phi_identity)"
+    # 2026-11-22: the frozen JEPA WM can have the TD-MPC MLP encoder (tdmpc_adapt.py encoder=mlp) or the PhiMap trunk (encoder=phimap);
+    # the type and hidden width are read from the checkpoint.
+    FROZEN_WM_PHIMAP, FROZEN_WM_WIDTH = False, None
+    if FREEZE_WM:
+        with open(WM_CKPT, 'rb') as f:
+            _wm_enc = pickle.load(f)['encoder']
+        FROZEN_WM_PHIMAP = 'TorchDense_0' in _wm_enc
+        FROZEN_WM_WIDTH  = int(_wm_enc['TorchDense_0' if FROZEN_WM_PHIMAP else 'Dense_0']['kernel'].shape[1])
+        del _wm_enc
     # Final evaluation after the last update, with more episodes than the periodic ones (reported number of the run)
     NUM_EVALS_FINAL = int(kwargs['num_evals_final']) if 'num_evals_final' in kwargs else 10
 
@@ -844,6 +853,7 @@ if __name__ == '__main__':
     class TDMPCFBConfig:
         variant:             str   = 'gphi'  # 'sepB' | 'gphi' (set from the required variant= flag; see the top of the script)
         frozen_wm:           bool  = False   # gphi only. phi = TD-MPC MLP encoder + dynamics loaded from a reward-free JEPA world model, never updated (see wm_ckpt=)
+        frozen_wm_phimap:    bool  = False   # set from wm_ckpt: the frozen encoder is a PhiMap (width phi_hidden_dim) instead of the TD-MPC MLP (enc_dim)
         phi_identity:        bool  = False   # gphi only. True: phi(s) = s (no encoder): F, B, pi act on the raw observation; the world model predicts the next raw state
         # optimisation (FB values: lr 1e-4, batch 1024, target EMA at every update)
         lr:                  float = 1e-4
@@ -922,7 +932,7 @@ if __name__ == '__main__':
             if self.sepB:
                 assert c.latent_dim == c.z_dim, "sepB: the B-head maps the latent to B, keep latent_dim == z_dim"
                 self.encoder = MLP(hidden=(c.enc_dim, c.enc_dim), out_dim=c.latent_dim)              # phi: TD-MPC encoder
-            elif c.frozen_wm:
+            elif c.frozen_wm and not c.frozen_wm_phimap:
                 self.encoder = MLP(hidden=(c.enc_dim, c.enc_dim), out_dim=c.latent_dim)              # phi: the TD-MPC encoder of tdmpc_adapt.py
             else:
                 self.encoder = PhiMap(c.phi_hidden_dim, c.latent_dim)                               # phi: the trunk
@@ -1350,6 +1360,9 @@ if __name__ == '__main__':
     for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'hidden_dim', 'feature_dim', 'mlp_dim'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: int(kwargs[name])})
+    if FREEZE_WM:
+        tdmpc_config = dataclasses.replace(tdmpc_config, frozen_wm_phimap=FROZEN_WM_PHIMAP,
+                                           **({'phi_hidden_dim': FROZEN_WM_WIDTH} if FROZEN_WM_PHIMAP else {'enc_dim': FROZEN_WM_WIDTH}))
     if VARIANT == 'sepB':
         assert 'bcons_coef' not in kwargs and 'b_encoder_grad' not in kwargs, "bcons_coef and b_encoder_grad are gphi options"
     print(tdmpc_config)
