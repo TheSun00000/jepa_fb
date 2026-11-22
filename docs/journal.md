@@ -175,7 +175,8 @@ Dated session notes, newest last.
   walker 623 / 645 / 573 = 614 (577 / 672 / 615 = 621), policy 593 (574); cheetah 376 / 386 / 215 = 326 (442 / 356 / 410 = 403), policy 338 (355);
   quadruped 627 / 671 / 628 = 642 (676 / 468 / 618 = 587), policy 631 (599). Differences by seed (MPPI): walker +46 / -27 / -42, cheetah -66 / +30 / -195, quadruped -49 / +203 / +10.
 - Reading: bcons is not needed on walker and quadruped (within noise; quadruped even tighter: 627-671 vs 468-676). On cheetah, MPPI is 77 lower on average,
-  driven by seed 3 (215). Per task, cheetah without bcons loses the backward tasks (vel2Back 602 / 689 / 345 vs 908 / ? / 759) and gains on flip (324-402 vs 309-320).
+  driven by seed 3 (215). Per task, cheetah without bcons loses the backward tasks (vel2Back 602 / 689 / 345 vs 908 / 926 / 759 by seed: lower on all 3 seeds, -237 to -414) and gains on flip (348 / 324 / 402 vs 309 / 25 / 320).
   No collapse in cheetah s3 training (latent_std 0.90, F_norm ~120 flat). n=3, so the cheetah drop is suggestive, not established.
 - Runs: training `hpc/logs/2026-11-22_19-04-1*_FBWM-gphi-*`, evals `hpc/logs/2026-11-22_19-4[12]-*_FBWM-gphi-*` (each eval checked to load its own bcons0 checkpoint).
+  Checked (2026-11-22): training and eval configs differ only in bcons_coef (new fields are at defaults that reproduce the old code: bc_coef 0, cons_target ema, frozen_wm off); model_loss = consistency only in the bcons0 runs.
   References: `hpc/logs/2026-11-15_19-4[3-6]-*`, `19-52-04`, `19-55-02` (eval runs of the Table 1 checkpoints).
