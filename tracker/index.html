@@ -130,6 +130,7 @@ input[type="text"] { width: min(260px, 100%); }
 .btn { background: transparent; border: 1px solid var(--line-2); padding: 4px 10px; cursor: pointer; color: var(--ink); }
 .btn:hover { border-color: var(--mppi); color: var(--mppi); }
 .btn.quiet { border-color: transparent; color: var(--dim); padding: 0 4px; }
+.btn.on { border-color: var(--mppi); color: var(--mppi); background: var(--mppi-soft); }
 
 /* detail */
 .detail-grid { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: var(--s2) 0; }
@@ -171,6 +172,13 @@ svg text { fill: var(--dim); font-family: var(--font); font-size: 10px; }
 .lg { display: flex; flex-wrap: wrap; gap: 4px var(--s3); font-size: var(--t-sm); color: var(--dim); }
 .lg .it { display: inline-flex; align-items: center; gap: 6px; }
 details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm); }
+.fd { display: grid; gap: var(--s4); }
+.fd .q { color: var(--ink); margin: 0; max-width: 90ch; }
+.fd .read { margin: 0; padding-left: 1.2em; display: grid; gap: 2px; font-size: var(--t-sm); color: var(--ink); max-width: 100ch; }
+.fd .runs { font-size: var(--t-xs); color: var(--faint); overflow-wrap: anywhere; margin: 0; }
+.mt td.txt { text-align: right; }
+.mt td.txt.best { font-weight: 700; color: var(--mppi); }
+.mt td.txt.worse { color: var(--bad); }
 
 /* todos */
 .todo { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s3); padding: var(--s2) 0; border-top: 1px solid var(--line); align-items: baseline; }
@@ -212,12 +220,20 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
       <div id="main-table"></div>
     </div>
     <div class="pane">
+      <header><h2><span class="hash">#</span>Results per task</h2><span class="label" id="tt-when">per-task table</span></header>
+      <p class="note" id="tt-protocol"></p>
+      <div class="filters" id="tt-tabs" role="group" aria-label="environment"></div>
+      <div id="task-table"></div>
+    </div>
+    <div class="pane">
       <header><h2><span class="hash">#</span>Effect of the number of labelled states</h2><span class="label" id="lc-envs">label budget</span></header>
+      <div class="filters" id="lc-tabs" role="group" aria-label="environment"></div>
       <div class="lg" id="lc-legend"></div>
       <div class="fig" id="lc-fig"></div>
       <p class="note" id="lc-note"></p>
       <details class="vals"><summary>values</summary><div id="lc-table"></div></details>
     </div>
+    <div id="findings"></div>
     <div class="grid2">
       <div class="pane">
         <header><h2><span class="hash">#</span>Claims</h2><span class="label">what the paper must show</span></header>
@@ -670,9 +686,44 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     box.appendChild(el("div", { cls: "tbox" }, [t]));
   }
 
+  /* ---------- paper: per-task table (one column per task, not averaged) ---------- */
+  function renderTaskTable() {
+    var box = $("task-table"); clear(box);
+    var T = S.paper.task_table;
+    if (!T) { box.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: S.loaded.paper ? "$ task table  (not written yet)" : "$ task table …" }),
+      el("span", { text: "Written by tools/paper_tables.py (collection paper, document task_table)." })])); return; }
+    $("tt-protocol").textContent = T.protocol || "";
+    $("tt-when").textContent = T.updated ? "as of " + T.updated : "per-task table";
+    var allCols = T.columns || [], envs = [];
+    allCols.forEach(function (c) { if (envs.indexOf(c.env) < 0) envs.push(c.env); });
+    if (envs.indexOf(S.ttEnv) < 0) S.ttEnv = envs[0];
+    var tabs = $("tt-tabs"); clear(tabs);
+    envs.forEach(function (e) {
+      var b = el("button", { cls: "btn" + (e === S.ttEnv ? " on" : ""), type: "button", "aria-pressed": e === S.ttEnv ? "true" : "false", text: e });
+      b.addEventListener("click", function () { S.ttEnv = e; renderTaskTable(); });
+      tabs.appendChild(b);
+    });
+    var cols = allCols.filter(function (c) { return c.env === S.ttEnv; });
+    var t = el("table", { cls: "mt" });
+    t.appendChild(el("thead", null, [el("tr", null, [el("th", { text: "method" })].concat(cols.map(function (c) { return el("th", { cls: "num", text: c.task }); })))]));
+    var tb = el("tbody");
+    (T.rows || []).forEach(function (r) {
+      var tds = [el("td", { text: r.label, title: r.training || "" })];
+      cols.forEach(function (c) {
+        var x = (r.cells || {})[c.env + "/" + c.task];
+        if (!x) { tds.push(el("td", { cls: "miss", text: "missing" })); return; }
+        tds.push(el("td", { cls: "cell" }, [el("span", { cls: "v", text: fmt(x.m) }), x.ci != null ? el("span", { cls: "ci", text: "±" + fmt(x.ci) }) : null,
+          el("span", { cls: "n", text: (x.n === 1 ? "1 seed" : x.n + " seeds") })]));
+      });
+      tb.appendChild(el("tr", { cls: r.ours ? "ours" : "" }, tds));
+    });
+    t.appendChild(tb);
+    box.appendChild(el("div", { cls: "tbox" }, [t]));
+  }
+
   /* ---------- paper: label-budget figure ---------- */
   var SER = { fbwm: { c: "var(--s-fbwm)", mk: "circle" }, fbwm_policy: { c: "var(--s-pol)", mk: "square" }, fb: { c: "var(--s-fb)", mk: "triangle" },
-              adapt_full: { c: "var(--s-adapt)", mk: "diamond" }, adapt_labels: { c: "var(--s-adapt)", mk: "diamond", hollow: true, dash: "2 3" } };
+              fbwm_frozen: { c: "var(--s-fbwm)", mk: "circle", hollow: true, dash: "2 3" }, adapt_full: { c: "var(--s-adapt)", mk: "diamond" }, adapt_labels: { c: "var(--s-adapt)", mk: "diamond", hollow: true, dash: "2 3" } };
   function marker(kind, x, y, color, hollow) {
     var r = 4.5, a = hollow ? { fill: "var(--pane)", stroke: color, "stroke-width": 1.6 } : { fill: color, stroke: "var(--pane)", "stroke-width": 1.5 };
     var e;
@@ -688,18 +739,42 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     if (!C) { fig.appendChild(el("div", { cls: "empty" }, [el("span", { cls: "prompt", text: S.loaded.paper ? "$ label curve  (not written yet)" : "$ label curve …" }),
       el("span", { text: "Written by tools/paper_tables.py (collection paper, document label_curve)." })])); return; }
     var envs = C.envs || [];
-    $("lc-envs").textContent = "mean over " + envs.join(" + ");
+    // environment buttons: all (mean over envs) or one environment
+    var choices = ["all"].concat(envs);
+    if (choices.indexOf(S.lcEnv) < 0) S.lcEnv = "all";
+    var sel = S.lcEnv, shown = sel === "all" ? envs : [sel];
+    var ltabs = $("lc-tabs"); clear(ltabs);
+    choices.forEach(function (e) {
+      var b = el("button", { cls: "btn" + (e === sel ? " on" : ""), type: "button", "aria-pressed": e === sel ? "true" : "false", text: e });
+      b.addEventListener("click", function () { S.lcEnv = e; renderLabelCurve(); });
+      ltabs.appendChild(b);
+    });
+    $("lc-envs").textContent = sel === "all" ? "mean over " + envs.join(" + ") : sel;
     $("lc-note").textContent = C.note || "";
-    var series = (C.series || []).filter(function (s) { return s.points && s.points.length; });
-    var refs = C.refs || [];
+    var series = (C.series || []).map(function (s) {
+      var pts = (s.points || []).map(function (p) {
+        if (sel === "all") return p;
+        var v = p.per_env && p.per_env[sel];
+        return v == null ? null : { N: p.N, m: v, envs: [sel], seeds: p.seeds };
+      }).filter(Boolean);
+      return { key: s.key, label: s.label, points: pts };
+    }).filter(function (s) { return s.points.length; });
+    var refs = (C.refs || []).map(function (r) {
+      if (sel === "all") return r;
+      var v = r.per_env && r.per_env[sel];
+      return v == null ? null : { key: r.key, label: r.label, m: v, envs: [sel] };
+    }).filter(Boolean);
     var W = 760, H = 330, padL = 44, padR = 150, padT = 12, padB = 34;
     var Ns = C.Ns || [100, 300, 1000, 3000, 10000];
     var lx0 = Math.log10(Ns[0]), lx1 = Math.log10(Ns[Ns.length - 1]);
-    var ymax = 100 * Math.ceil(Math.max.apply(null, [500].concat(series.map(function (s) { return Math.max.apply(null, s.points.map(function (p) { return p.m; })); }), refs.map(function (r) { return r.m; }))) / 100);
+    var allv = [].concat.apply([], series.map(function (s) { return s.points.map(function (p) { return p.m; }); })).concat(refs.map(function (r) { return r.m; }));
+    var lo = Math.min.apply(null, allv), hi = Math.max.apply(null, allv), rng = Math.max(hi - lo, 1);
+    var gstep = rng > 400 ? 100 : rng > 200 ? 50 : rng > 100 ? 25 : rng > 40 ? 10 : 5;   // the y-axis fits the data of the selected view (no forced zero)
+    var ymin = Math.floor((lo - 0.05 * rng) / gstep) * gstep, ymax = Math.ceil((hi + 0.05 * rng) / gstep) * gstep;
     var X = function (n) { return padL + (Math.log10(n) - lx0) / (lx1 - lx0) * (W - padL - padR); };
-    var Y = function (v) { return padT + (1 - v / ymax) * (H - padT - padB); };
-    var s = svg("svg", { viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Return versus number of labelled states, mean over " + envs.join(" and ") });
-    for (var v = 0; v <= ymax; v += 100) {
+    var Y = function (v) { return padT + (1 - (v - ymin) / (ymax - ymin)) * (H - padT - padB); };
+    var s = svg("svg", { viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Return versus number of labelled states, " + (sel === "all" ? "mean over " + envs.join(" and ") : sel) });
+    for (var v = ymin; v <= ymax + 1e-9; v += gstep) {
       s.appendChild(svg("line", { x1: padL, x2: W - padR, y1: Y(v), y2: Y(v), stroke: "var(--line)", "stroke-width": 1 }));
       var t = svg("text", { x: padL - 6, y: Y(v) + 3, "text-anchor": "end" }); t.textContent = v; s.appendChild(t);
     }
@@ -716,7 +791,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
       var pts = se.points.map(function (p) { return [X(p.N), Y(p.m)]; });
       if (pts.length > 1) s.appendChild(svg("polyline", { points: pts.map(function (q) { return q[0].toFixed(1) + "," + q[1].toFixed(1); }).join(" "), fill: "none", stroke: st.c, "stroke-width": 2, "stroke-linejoin": "round", "stroke-dasharray": st.dash || "" }));
       se.points.forEach(function (p) {
-        var partial = (p.envs || []).length < envs.length;
+        var partial = (p.envs || []).length < shown.length;
         s.appendChild(marker(st.mk, X(p.N), Y(p.m), st.c, st.hollow || partial));
       });
       var last = se.points[se.points.length - 1];
@@ -742,7 +817,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
       clear(tip); tip.appendChild(el("div", { cls: "k", text: "N = " + n }));
       series.forEach(function (se) {
         var p = se.points.filter(function (q) { return q.N === n; })[0];
-        tip.appendChild(el("div", { cls: "row" }, [el("span", { text: se.label }), el("span", { text: p ? fmt(p.m) + ((p.envs || []).length < envs.length ? " (" + p.envs.join("+") + " only)" : "") : "–" })]));
+        tip.appendChild(el("div", { cls: "row" }, [el("span", { text: se.label }), el("span", { text: p ? fmt(p.m) + ((p.envs || []).length < shown.length ? " (" + p.envs.join("+") + " only)" : "") : "–" })]));
       });
       refs.forEach(function (rf) { tip.appendChild(el("div", { cls: "row" }, [el("span", { cls: "k", text: rf.label + " (topline)" }), el("span", { text: fmt(rf.m) })])); });
       tip.hidden = false;
@@ -772,7 +847,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     series.forEach(function (se) {
       tb2.appendChild(el("tr", null, [el("td", { text: se.label })].concat(Ns.map(function (n) {
         var p = se.points.filter(function (q) { return q.N === n; })[0];
-        return el("td", { cls: "num" + (p && (p.envs || []).length < envs.length ? " muted" : ""), text: p ? fmt(p.m) + ((p.envs || []).length < envs.length ? " (" + p.envs.join("+") + ")" : "") : "–" });
+        return el("td", { cls: "num" + (p && (p.envs || []).length < shown.length ? " muted" : ""), text: p ? fmt(p.m) + ((p.envs || []).length < shown.length ? " (" + p.envs.join("+") + ")" : "") : "–" });
       }))));
     });
     refs.forEach(function (rf) { tb2.appendChild(el("tr", null, [el("td", { cls: "muted", text: rf.label + " (topline)" })].concat(Ns.map(function () { return el("td", { cls: "num muted", text: fmt(rf.m) }); })))); });
@@ -780,7 +855,40 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     tbx.appendChild(el("div", { cls: "tbox" }, [t2]));
   }
 
-  function renderAll() { renderStatus(); renderMainTable(); renderLabelCurve(); renderClaims(); renderLatest(); renderRuns(); renderCompare(); renderJobs(); renderLog(); renderTodos(); }
+  /* ---------- findings: pre-formatted result tables (collection findings) ---------- */
+  function renderFindings() {
+    var box = $("findings"); clear(box);
+    var docs = (S.findings || []).filter(function (d) { return !d.hidden; });
+    if (!docs.length) return;
+    var wrap = el("div", { cls: "fd" });
+    docs.forEach(function (d) {
+      var cols = d.columns || [];
+      var t = el("table", { cls: "mt" });
+      t.appendChild(el("thead", null, [el("tr", null, [el("th", { text: d.rowHead || "" })].concat(cols.map(function (c) { return el("th", { cls: "num", text: c.label || c.key }); })))]));
+      var tb = el("tbody"), lastGroup = null;
+      (d.rows || []).forEach(function (r) {
+        if (r.group && r.group !== lastGroup) { tb.appendChild(el("tr", { cls: "grp" }, [el("td", { colspan: String(1 + cols.length), text: r.group })])); lastGroup = r.group; }
+        var tds = [el("td", { cls: r.note ? "wrap" : "", text: r.label, title: r.note || "" })];
+        cols.forEach(function (c) {
+          var v = (r.cells || {})[c.key], mark = (r.marks || {})[c.key] || "";
+          tds.push(el("td", { cls: v == null || v === "" ? "miss" : "txt " + mark, text: v == null || v === "" ? "·" : String(v) }));
+        });
+        tb.appendChild(el("tr", { cls: r.ours ? "ours" : "" }, tds));
+      });
+      t.appendChild(tb);
+      var pane = el("div", { cls: "pane" }, [
+        el("header", null, [el("h2", null, [el("span", { cls: "hash", text: "#" }), d.title || d.id]), el("span", { cls: "label", text: d.tag || (d.updated ? "as of " + d.updated : "") })]),
+        d.question ? el("p", { cls: "q", text: d.question }) : null,
+        d.protocol ? el("p", { cls: "note", text: d.protocol }) : null,
+        el("div", { cls: "tbox" }, [t]),
+        (d.reading || []).length ? el("ul", { cls: "read" }, d.reading.map(function (x) { return el("li", { text: x }); })) : null,
+        d.runs ? el("p", { cls: "runs", text: "runs: " + d.runs }) : null]);
+      wrap.appendChild(pane);
+    });
+    box.appendChild(wrap);
+  }
+
+  function renderAll() { renderStatus(); renderMainTable(); renderTaskTable(); renderLabelCurve(); renderFindings(); renderClaims(); renderLatest(); renderRuns(); renderCompare(); renderJobs(); renderLog(); renderTodos(); }
   renderAll();
 
   /* ---------- data ---------- */
@@ -815,8 +923,10 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
       sub(db, "studies", function (docs) { S.studies = docs.sort(function (a, b) { return (a.order || 0) - (b.order || 0); }); });
       sub(db, "updates", function (docs) { S.updates = docs.sort(function (a, b) { return (b.date || "").localeCompare(a.date || "") || (b.id || "").localeCompare(a.id || ""); }); });
       sub(db, "paper", function (docs) { var p = {}; docs.forEach(function (d) { p[d.id] = d; }); S.paper = p; });
+      sub(db, "findings", function (docs) { S.findings = docs.sort(function (a, b) { return (a.order || 0) - (b.order || 0); }); });
       sub(db, "todos", function (docs) { S.todos = docs.sort(function (a, b) { return (a.created || "").localeCompare(b.created || ""); }); });
     }).catch(function () {});
   }
 })();
 </script>
+

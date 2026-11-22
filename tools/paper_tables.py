@@ -3,7 +3,8 @@
 
     python tools/paper_tables.py      # writes hpc/status/paper_main_table.json and hpc/status/paper_label_curve.json
 
-Both go to the tracker database (collection `paper`, documents `main_table` and `label_curve`), shown in the overview tab.
+They go to the tracker database (collection `paper`, documents `main_table`, `label_curve`; `task_table` since 2026-11-17: the per-task
+version of the main table, hpc/status/paper_task_table.json), shown in the overview tab.
 
 Protocol of the main table (N = 10k labelled states): mean over the environment's tasks of the final evaluation, then mean and
 95% CI (t-interval) over seeds. One fbwm configuration everywhere: gphi, z_dim 50, MPPI with the lstsq per-step reward and
@@ -16,10 +17,11 @@ from collections import defaultdict
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 LOGS = os.path.join(ROOT, 'hpc', 'logs')
 OUT = os.path.join(ROOT, 'hpc', 'status')
-ENVS = ['walker', 'cheetah', 'quadruped', 'antmaze_m9', 'antmaze_g1']   # antmaze left out until 2026-11-21, then added (user)
+ENVS = ['walker', 'cheetah', 'quadruped', 'antmaze_g1']   # antmaze_m9 dropped 2026-11-22: antmaze reports goal success only (user)   # antmaze left out until 2026-11-21, then added (user)
 # OGBench antmaze_medium, navigate dataset, bc_coef 0.3 (2026-11-21): two columns. antmaze_m9 = mean over the 9 tasks (5 goals as success
 # rate, 4 velocity returns: dominated by the velocity tasks), zero-shot methods only. antmaze_g1 = goal_1 success rate in % (all methods;
 # TD-MPC and the adapted world model are trained on this one task).
+DMC = ['walker', 'cheetah', 'quadruped']
 TASKS = {'walker': ['stand', 'walk', 'vel8', 'run', 'flip'], 'cheetah': ['vel10Back', 'vel2Back', 'vel2', 'vel10', 'flip'],
          'quadruped': ['stand', 'walk', 'run', 'jump']}
 NS = [100, 300, 1000, 3000, 10000]
@@ -66,15 +68,23 @@ def mean_ci(vals):
 
 # ── per-run scores: {(method, env, seed, N): (score, folder)} ──────────────────────────────────────────────────────
 S = {}
+TS = {}   # same keys as S: {task: score} of the chosen run, for the per-task table
 NOTES = defaultdict(set)
 
 
-def put(method, env, seed, n, score, folder, note=None):
+def put(method, env, seed, n, score, folder, note=None, per_task=None):
     if score is None:
         return
     S[(method, env, int(seed), int(n))] = (score, folder)
+    if per_task:
+        TS[(method, env, int(seed), int(n))] = per_task
     if note:
         NOTES[(method, env, int(n))].add(note)
+
+
+def row_tasks(row, prefix, env):
+    """{task: score} from an eval_log row (columns <prefix><task>_mean)."""
+    return {t: f(row.get(f'{prefix}{t}_mean')) for t in TASKS[env]}
 
 
 # toplines: one run per (env, task, seed), final eval, mean over tasks per seed
@@ -93,13 +103,14 @@ for fam, method in (('TDMPC', 'tdmpc'), ('TD3', 'td3')):
         if env.startswith('pol:'):
             env, m = env[4:], 'tdmpc_policy'
         if all(t in tasks for t in TASKS[env]):
-            put(m, env, seed, 10000, st.mean(tasks[t][0] for t in TASKS[env]), tasks[TASKS[env][0]][1])
+            put(m, env, seed, 10000, st.mean(tasks[t][0] for t in TASKS[env]), tasks[TASKS[env][0]][1],
+                per_task={t: tasks[t][0] for t in TASKS[env]})
 
 # adaptation baselines (frozen reward-free JEPA world model, 6k Q updates): full dataset / labels only + imagined rollouts
 for fam, method in (('TDMPC-adapt', 'adapt_full'), ('TDMPC-adaptLM', 'adapt_labels')):
     per = defaultdict(dict)
-    for folder, kw, ev in runs(f'2026-11-1[45]_*_{fam}-*'):
-        if str(kw.get('adapt_steps')) != '6000':
+    for folder, kw, ev in runs(f'2026-11-1[4-9]_*_{fam}-*'):   # 11-18: quadruped N sweep (N = 100..3000)
+        if str(kw.get('adapt_steps')) != '6000' or int(kw.get('seed', 1)) > 3:   # seeds 4-6: quadruped N = 3000 / 10000 repeat (2026-11-18), analysed separately
             continue
         if fam == 'TDMPC-adapt' and kw.get('q_data') not in (None, 'dataset'):
             continue
@@ -108,7 +119,8 @@ for fam, method in (('TDMPC-adapt', 'adapt_full'), ('TDMPC-adaptLM', 'adapt_labe
             per[(kw['env_name'], kw.get('seed', 1), int(kw['n_labels']))][kw['task']] = (f(fin[-1]['return_mean']), folder)
     for (env, seed, n), tasks in per.items():
         if all(t in tasks for t in TASKS.get(env, [])):
-            put(method, env, seed, n, st.mean(tasks[t][0] for t in TASKS[env]), tasks[TASKS[env][0]][1])
+            put(method, env, seed, n, st.mean(tasks[t][0] for t in TASKS[env]), tasks[TASKS[env][0]][1],
+                per_task={t: tasks[t][0] for t in TASKS[env]})
 
 # zero-shot, label sweep (eval-only, 20 episodes): fbwm (z50 + lstsq + dataset Cov, root-check MPPI preferred) and FB (500k preferred)
 LATE = defaultdict(list)
@@ -119,20 +131,34 @@ for folder, kw, ev in runs('2026-11-1[5-9]_*'):
     if not r:
         continue
     r, env, n = r[0], kw['env_name'], int(kw['z_labels'])
+    if str(kw.get('freeze_wm')) == 'true':   # fbwm on a frozen reward-free world model (2026-11-18)
+        LATE['frozen'].append(('fbwm_frozen', env, kw['seed'], n, f(r['mean_over_tasks']), folder, row_tasks(r, '', env)))
+        LATE['frozen'].append(('fbwm_frozen_policy', env, kw['seed'], n, f(r['policy_mean_over_tasks']), folder, row_tasks(r, 'policy_', env)))
+        continue
     if '_FB-' in folder:
         old_ckpt = any(t in kw['eval_ckpt'] for t in ('2026-11-13', '2026-11-14'))   # 1M-update walker checkpoints
-        LATE['fb_old' if old_ckpt else 'fb'].append(('fb', env, kw['seed'], n, f(r['mean_over_tasks']), folder))
+        if env == 'cheetah' and 'step:500000' in kw['eval_ckpt'] and kw.get('label_align') == 1:   # 2026-11-18: corrected fb_jax, 500k checkpoint of a 1M run, 10000 episodes
+            LATE['fb_new'].append(('fb', env, kw['seed'], n, f(r['mean_over_tasks']), folder, row_tasks(r, '', env)))
+            continue
+        LATE['fb_old' if old_ckpt else 'fb'].append(('fb', env, kw['seed'], n, f(r['mean_over_tasks']), folder, row_tasks(r, '', env)))
     elif (kw.get('variant') == 'gphi' and kw.get('mppi_reward') == 'lstsq' and kw.get('z_cov') == 'dataset' and 'z_dim' not in kw
           and str(kw.get('consistency_coef')) == PAPER_CONS and 'FBWMBTD' not in folder
           and not any(k in kw for k in ('horizon', 'mppi_init_policy', 'mixture_coef', 'mppi_terminal_only', 'mppi_norm', 'z_ridge', 'num_samples', 'iterations', 'num_elites', 'temperature', 'min_std', 'momentum', 'mppi_init_std', 'diag_profile', 'diag_wm'))):
         tier = 'root' if str(kw.get('mppi_root_check')) in ('1', 'True', 'true') else 'noroot'
-        LATE[tier].append(('fbwm', env, kw['seed'], n, f(r['mean_over_tasks']), folder))
-        LATE[tier].append(('fbwm_policy', env, kw['seed'], n, f(r['policy_mean_over_tasks']), folder))
+        if env == 'cheetah' and 'step:500000' in kw['eval_ckpt'] and str(kw.get('target_mean')) == '1' and tier == 'root':
+            tier = 'tdj'   # 2026-11-18: fbwm with the TD-JEPA FB changes (decisions.md), 500k checkpoint of a 1M run
+        LATE[tier].append(('fbwm', env, kw['seed'], n, f(r['mean_over_tasks']), folder, row_tasks(r, '', env)))
+        LATE[tier].append(('fbwm_policy', env, kw['seed'], n, f(r['policy_mean_over_tasks']), folder, row_tasks(r, 'policy_', env)))
 
-for tier, note in (('root', None), ('noroot', 'MPPI without the root check'), ('fb', None)):
-    for (m, env, seed, n, score, folder) in LATE[tier]:
+TDJ_NOTE = '500k checkpoint of a 1M run, TD-JEPA FB changes (tau 0.001, discount 0.98, no Q loss, B 256, mean target, mix next, half ortho)'
+FB_NEW_NOTE = '2 seeds; corrected fb_jax (discount 0.98, Q loss 1/d, no phi MLP), 10000 episodes; 500k checkpoint of a 1M run; no planner, policy return'
+FB_NEW_ENVS = {e for (m, e, s, n, sc, fo, pt) in LATE['fb_new']}   # for these envs the new FB replaces the older sweeps and fallbacks entirely
+for tier, note in (('frozen', 'gphi FB on a frozen reward-free JEPA world model (eval-only label sweep, 20 episodes)'), ('tdj', TDJ_NOTE), ('fb_new', FB_NEW_NOTE), ('root', None), ('noroot', 'MPPI without the root check'), ('fb', None)):
+    for (m, env, seed, n, score, folder, pt) in LATE[tier]:
+        if tier in ('fb', 'fb_old') and env in FB_NEW_ENVS:
+            continue
         if (m, env, int(seed), int(n)) not in S:
-            put(m, env, seed, n, score, folder, note)
+            put(m, env, seed, n, score, folder, note, pt)
 
 # fallbacks for the main table only (N = 10k) where no eval-only sweep exists yet: training-run finals, flagged
 for folder, kw, ev in runs('2026-11-15_*'):
@@ -143,18 +169,28 @@ for folder, kw, ev in runs('2026-11-15_*'):
     if not fin:
         continue
     fin, seed = fin[-1], kw.get('seed', 1)
-    if '_FB-' in folder and ('fb', env, int(seed), 10000) not in S:
-        put('fb', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final (no z sweep yet)')
+    if '_FB-' in folder and env not in FB_NEW_ENVS and ('fb', env, int(seed), 10000) not in S:
+        put('fb', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final (no z sweep yet)', row_tasks(fin, '', env))
     if ('FBWM-gphi' in folder and kw.get('mppi_reward') == 'lstsq' and not kw.get('fcons_coef') and str(kw.get('consistency_coef')) == PAPER_CONS
             and not any(k in kw for k in ('hidden_dim', 'mix_ratio', 'discount', 'batch_size', 'lr', 'tau', 'q_loss_coef', 'b_ortho_coef'))
             and ('fbwm', env, int(seed), 10000) not in S):
-        put('fbwm', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final' + ('' if str(kw.get('mppi_root_check')) in ('1', 'True') else ', no root check') + ('' if kw.get('z_cov') == 'dataset' else ', Cov(B) from the labels'))
-        put('fbwm_policy', env, seed, 10000, f(fin['policy_mean_over_tasks']), folder, 'training-run final')
+        put('fbwm', env, seed, 10000, f(fin['mean_over_tasks']), folder, 'training-run final' + ('' if str(kw.get('mppi_root_check')) in ('1', 'True') else ', no root check') + ('' if kw.get('z_cov') == 'dataset' else ', Cov(B) from the labels'), row_tasks(fin, '', env))
+        put('fbwm_policy', env, seed, 10000, f(fin['policy_mean_over_tasks']), folder, 'training-run final', row_tasks(fin, 'policy_', env))
+
+# fbwm on a frozen reward-free world model (2026-11-18): training-run finals, N = 10k only (no label sweep yet)
+FROZEN_NOTE = 'gphi FB trained on a frozen reward-free JEPA world model (the one of the adaptation baselines); 500k updates'
+for folder, kw, ev in runs('2026-11-1[89]_*FBWM-gphi-frozenwm-*'):
+    env = kw.get('env_name')
+    fin = [x for x in ev if x.get('tag') == 'final']
+    if env in TASKS and fin and str(kw.get('freeze_wm')) == 'true' and str(kw.get('num_evals_final')) == '20':
+        fin, seed = fin[-1], kw.get('seed', 1)
+        put('fbwm_frozen', env, seed, 10000, f(fin['mean_over_tasks']), folder, FROZEN_NOTE, row_tasks(fin, '', env))
+        put('fbwm_frozen_policy', env, seed, 10000, f(fin['policy_mean_over_tasks']), folder, FROZEN_NOTE, row_tasks(fin, 'policy_', env))
 
 # last resort: the 1M-update walker FB checkpoints
-for (m, env, seed, n, score, folder) in LATE['fb_old']:
-    if (m, env, int(seed), int(n)) not in S:
-        put(m, env, seed, n, score, folder, 'FB checkpoints: 1M updates')
+for (m, env, seed, n, score, folder, pt) in LATE['fb_old']:
+    if env not in FB_NEW_ENVS and (m, env, int(seed), int(n)) not in S:
+        put(m, env, seed, n, score, folder, 'FB checkpoints: 1M updates', pt)
 
 # ── antmaze_medium navigate (2026-11-21) ──────────────────────────────────────────────────────────────────────────
 AM_KW = dict(env_name='antmaze_medium', dataset='navigate', bc_coef=0.3)
@@ -168,11 +204,13 @@ for folder, kw, ev in runs('2026-11-2[1-9]_*antmaze_medium*'):
     if '_FB-' in folder:
         put('fb', 'antmaze_m9', seed, 10000, f(fin['mean_over_tasks']), folder)
         put('fb', 'antmaze_g1', seed, 10000, None if f(fin['goal_1_mean']) is None else 100 * f(fin['goal_1_mean']), folder)
-    elif 'FBWM-gphi' in folder and str(kw.get('consistency_coef')) == '5' and str(kw.get('z_dim')) == '200' and 'horizon' not in kw and kw.get('mppi_reward') == 'lstsq':
+    elif ('FBWM-gphi' in folder and str(kw.get('consistency_coef')) == '5' and str(kw.get('z_dim')) == '200' and 'horizon' not in kw
+            and kw.get('mppi_reward') == 'lstsq'
+            and not any(k in kw for k in ('cons_target', 'phi_hidden_dim', 'bcons_coef', 'fbgoal_k', 'freeze_wm'))):   # 2026-11-22: ablation runs
         note = 'z_dim 200' + ('' if str(kw.get('mppi_root_check')) in ('1', 'True') else ', no root check')
         for m, pre in (('fbwm', ''), ('fbwm_policy', 'policy_')):
-            put(m, 'antmaze_m9', seed, 10000, f(fin[pre + 'mean_over_tasks']), folder, note)
-            g = f(fin[pre + 'goal_1_mean'])
+            put(m, 'antmaze_m9', seed, 10000, f(fin.get(pre + 'mean_over_tasks')), folder, note)
+            g = f(fin.get(pre + 'goal_1_mean'))
             put(m, 'antmaze_g1', seed, 10000, None if g is None else 100 * g, folder, note)
     elif '_TDMPC-' in folder and '_TDMPC-adapt' not in folder and kw.get('task') == 'goal_1':
         put('tdmpc', 'antmaze_g1', seed, 10000, 100 * f(fin['return_mean']), folder, 'goal_1 only')
@@ -183,10 +221,12 @@ for folder, kw, ev in runs('2026-11-2[1-9]_*antmaze_medium*'):
 # ── main table ─────────────────────────────────────────────────────────────────────────────────────────────────────
 ROWS = [
     ('toplines: true reward, trained per task', [('tdmpc', 'TD-MPC (MPPI)', 'per task, ~35 min'),
+                                                 ('tdmpc_policy', 'TD-MPC (policy)', 'per task, ~35 min'),
                                                  ('td3', 'offline TD3', 'per task, ~8 min')]),
     ('adaptation: reward-free world model + N labels', [('adapt_full', 'TD-MPC heads, full dataset', 'per task, ~20 s'),
                                                         ('adapt_labels', 'TD-MPC heads, labels only (Dyna)', 'per task, ~20 s')]),
-    ('zero-shot: no training per task', [('fb', 'FB', 'none'), ('fbwm_policy', 'fbwm, policy', 'none'), ('fbwm', 'fbwm, MPPI (ours)', 'none')]),
+    ('zero-shot: no training per task', [('fb', 'FB', 'none'), ('fbwm_policy', 'fbwm, policy', 'none'), ('fbwm', 'fbwm, MPPI (ours)', 'none'),
+                                        ('fbwm_frozen_policy', 'fbwm on a frozen world model, policy', 'none'), ('fbwm_frozen', 'fbwm on a frozen world model, MPPI', 'none')]),
 ]
 table = {'title': 'Main results, N = 10k labelled states',
          'protocol': ('Mean over the environment\'s tasks of the final evaluation (20 episodes for zero-shot methods, 10 for the toplines '
@@ -207,10 +247,29 @@ for gname, items in ROWS:
         g['rows'].append({'key': key, 'label': label, 'training': training, 'ours': key == 'fbwm', 'cells': cells})
     table['groups'].append(g)
 
+# ── per-task table (N = 10k): the same chosen runs as the main table, one column per (env, task), mean ± 95% CI over seeds ─────────────
+TASK_ROWS = [('tdmpc', 'TD-MPC (MPPI)', 'per task, ~35 min'), ('td3', 'offline TD3', 'per task, ~10 min'),
+             ('adapt_full', 'TD-MPC heads, full dataset', 'per task, ~20 s'), ('fb', 'FB', 'none'), ('fbwm_policy', 'fbwm, policy', 'none'),
+             ('fbwm', 'fbwm, MPPI (ours)', 'none'),
+             ('fbwm_frozen_policy', 'fbwm on a frozen world model, policy', 'none'), ('fbwm_frozen', 'fbwm on a frozen world model, MPPI', 'none')]
+task_table = {'title': 'Per-task results, N = 10k labelled states',
+              'protocol': ('One column per task, not averaged. Mean ± 95% CI over seeds (n = seeds) of the final evaluation of each run '
+                           '(20 episodes for zero-shot methods, 10 for the others); the runs are the ones behind the main table.'),
+              'columns': [{'env': e, 'task': t} for e in DMC for t in TASKS[e]], 'rows': []}
+for key, label, training in TASK_ROWS:
+    cells = {}
+    for e in DMC:
+        for t in TASKS[e]:
+            vals = [TS[k][t] for k in TS if k[0] == key and k[1] == e and k[3] == 10000 and TS[k].get(t) is not None]
+            c = mean_ci(vals)
+            if c:
+                cells[f'{e}/{t}'] = c
+    task_table['rows'].append({'key': key, 'label': label, 'training': training, 'ours': key == 'fbwm', 'cells': cells})
+
 # ── label-budget figure: mean over envs of the per-env mean over seeds ─────────────────────────────────────────────
 SERIES = [('fbwm', 'fbwm, MPPI (ours)'), ('fbwm_policy', 'fbwm, policy'), ('fb', 'FB'),
-          ('adapt_full', 'adapted, full dataset'), ('adapt_labels', 'adapted, labels only')]
-CURVE_ENVS = ['walker', 'cheetah']
+          ('fbwm_frozen', 'fbwm on a frozen world model, MPPI'), ('adapt_full', 'adapted, full dataset'), ('adapt_labels', 'adapted, labels only')]
+CURVE_ENVS = ['walker', 'cheetah', 'quadruped']   # quadruped added 2026-11-18 for the all / walker / cheetah / quadruped buttons of the figure
 
 
 def env_mean(key, env, n):
@@ -239,10 +298,11 @@ for key, label in (('tdmpc', 'TD-MPC'), ('td3', 'offline TD3')):
 
 import datetime
 now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-table['updated'] = curve['updated'] = now
+table['updated'] = curve['updated'] = task_table['updated'] = now
 os.makedirs(OUT, exist_ok=True)
 json.dump(table, open(os.path.join(OUT, 'paper_main_table.json'), 'w'), indent=1)
 json.dump(curve, open(os.path.join(OUT, 'paper_label_curve.json'), 'w'), indent=1)
+json.dump(task_table, open(os.path.join(OUT, 'paper_task_table.json'), 'w'), indent=1)
 print('main table:', {r['key']: {e: c['m'] for e, c in r['cells'].items()} for g in table['groups'] for r in g['rows']})
 print('curve:', {s['key']: [(p['N'], p['m'], ''.join(e[0] for e in p['envs'])) for p in s['points']] for s in curve['series']},
       '| refs:', [(r['label'], r['m'], r['envs']) for r in curve['refs']])
