@@ -188,3 +188,12 @@ Dated session notes, newest last.
 - **E2** (collapse panel): matched JEPA WM with no regulariser (var=cov=0), EMA and online target; FBWM with EMA and online consistency target; walker + antmaze_medium, s1-3 (`fbj_e2_*`, 24 jobs). `fbwm.py` now logs `latent_rank` (RankMe on the batch, same formula as tdmpc_adapt.py) so every curve uses the same measure.
 - **E3** (latent diagnostics, eval only): `wm_goal.py diag_geom=1` now runs on dm_control: eff_rank / n_dims_99 / top1_var, ridge probe to the full state, and corr of each task reward with its ridge fit on phi(s) (and on the raw state, for reference); train on trajectories < 9000, test on 9000+. On the 9 FBWM paper checkpoints and the 9 old JEPA WMs (`fbj_e3_geom_*`), and on the new matched WMs (`fbj_e3_geom_jepa64_*`, after E1).
 - Tooling: `tools/find_run.py` (exact checkpoint lookup for chained jobs, exits 1 if none), `queue.py add --after`.
+- **E3 results (diag_geom, 50k held-out states of trajectories 9000+; mean of 3 seeds; FBWM paper ckpt / matched JEPA PhiMap 64 VICReg / old JEPA MLP):**
+  | env | state probe R^2 | eff rank (/50) | top-1 var share | reward linear fit corr (raw state) |
+  |---|---|---|---|---|
+  | walker | 0.92 / 0.97 / 0.90 | 36.6 / 49.1 / 49.9 | 0.19 / 0.03 / 0.03 | 0.862 / 0.859 / 0.866 (0.861) |
+  | cheetah | 0.72 / 0.96 / 0.95 | 26.0 / 49.8 / 49.9 | 0.47 / 0.04 / 0.03 | 0.727 / 0.761 / 0.734 (0.702) |
+  | quadruped | 0.58 / 0.72 / 0.59 | 40.0 / 49.7 / 49.7 | 0.24 / 0.03 / 0.03 | 0.932 / 0.953 / 0.942 (0.948) |
+  Spread across seeds is small (probe +-0.02, rank +-0.4, reward corr +-0.01).
+- Reading: by linear readout the FBWM latent holds LESS than the matched JEPA latent: lower state probe on every env (cheetah 0.72 vs 0.96), equal (walker) or lower (cheetah -0.03, quadruped -0.02) reward fit. It is also lower-rank and anisotropic (cheetah: 26 / 50, first direction 47% of the variance), not collapsed (n_dims_99 24-43). VICReg whitens by construction, so the JEPA rank of ~50 is expected. So "FB shapes a better latent" cannot mean "more information in the latent"; on DMC it has to be shown by what the latent does for planning (E1) and, on the mazes, by its geometry (Spearman 0.92 vs 0.6-0.7). Caveat: linear ridge only (B = g(phi) is an MLP).
+- Runs (cluster `logs/`, synced to `hpc/logs/`): `2026-11-22_22-*_WMGOAL-fbwm-geom_fbwm_s{1,2,3}-<env>`, `*_WMGOAL-*-geom_jepamlp_s*-<env>`, `*_WMGOAL-*-geom_jepa64_s*-<env>`. Matched WMs: `2026-11-22_22-2*_JEPAWM-phimap-{walker,cheetah,quadruped}*` (500k updates each).
