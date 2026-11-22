@@ -152,7 +152,7 @@ Dated session notes, newest last.
   fbgoal_k / fbgoal_official` (FB goal z = B(goal), actor and MPPI), `wm_goal.py diag_geom` (probe + distance rank correlations) and
   `planner=cem` (LeWM's CEM on JEPA / FBWM), `tools/goal_results.py` (tables from the run folders).
 - Results (successes / 50, K = 10 / 50 / 200; details and run folders in docs/goal_reaching.md):
-  - Same MPPI (5 steps, replan every step), four latents. antmaze-medium (2 seeds, / 100): FBWM 32 / 11 / 4, JEPA 12 / 5 / 2,
+  - Same MPPI (5 steps, replan every step), four latents. antmaze-medium (3 seeds, / 150): FBWM 48 / 15 / 7, JEPA 19 / 6 / 3,
     LeWM 7 / 4 / 3 (/ 50), DINO-WM 10 / 4 / 2. antmaze-large: FBWM 13 / 4 / 0, JEPA 5 / 1 / 0, LeWM 4 / 2 / 1, DINO 5 / 1 / 2.
     cube: FBWM 21 / 11 / 16, JEPA 39 / 13 / 18, LeWM 43 / 11 / 13, DINO 30 / 12 / 10.
   - Geometry, Spearman(latent distance, real displacement): FBWM 0.92 / 0.91 / 0.56 (medium / large / cube), JEPA 0.52 / 0.55 / 0.51.
@@ -164,5 +164,5 @@ Dated session notes, newest last.
   planners (user: it uses a learned value); it needs a goal-conditioned value baseline (GCIQL / HIQL), not done.
 - Bugs on the way: zsh does not split `$VAR` in `for`/`set --` (two queue batches ran with one K or an empty ckpt; requeued);
   `wm_baselines.py` receding assert blocked planner=mppi (fixed). JEPA seed 2 and FBWM seed 2 timed out on slow nodes (JEPA rerun done,
-  FBWM seed 2 requeued, evals to run when it ends).
+  FBWM seed 2 rerun done; its FB-goal evals were still running at the end of the session).
 - Cancelled at the user's request: FB heads on the frozen JEPA WM for goal reaching (job 555171), already in the paper (Table 1).

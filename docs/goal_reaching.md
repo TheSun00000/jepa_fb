@@ -44,17 +44,19 @@ goal latent, no value. LeWM / DINO-WM through this same MPPI: queued (planner=mp
 | JEPA WM, seed 3 | 6 | | 2 | | 1 |
 | FBWM, seed 3 | 18 | | 7 | | 1 |
 
-Seed 3 geometry (Spearman latent distance vs displacement): FBWM 0.92, JEPA 0.52 (probe R^2 0.99 / 0.93), as seed 1.
+Seeds 2 and 3 geometry (Spearman latent distance vs displacement): FBWM 0.92 / 0.92, JEPA 0.52 / 0.52, as seed 1.
+Seed 2 runs: `hpc/logs/2026-11-22_0*_WMGOAL-*ev_am_s2*` (checkpoints `2026-11-22_00-24-08_FBWM-gphi-antmaze_medium`,
+`2026-11-21_23-36-50_JEPAWM-antmaze_medium`).
 Runs: `hpc/logs/2026-11-21_23-1*_WMGOAL-*ev_am_s3*` (checkpoints `2026-11-21_22-18-34_FBWM-gphi-antmaze_medium`,
 `2026-11-21_22-29-20_JEPAWM-antmaze_medium`).
 
-**(A') Same planner, all four latents, all envs** (successes / 50; antmaze-medium FBWM and JEPA: seeds 1 + 3 pooled, / 100). LeWM /
+**(A') Same planner, all four latents, all envs** (successes / 50; antmaze-medium FBWM and JEPA: seeds 1-3 pooled, / 150). LeWM /
 DINO-WM: `wm_baselines.py planner=mppi plan_horizon=1` (one 5-step block, replan every env step, the same MPPI settings).
 
 | env | latent | K=10 | K=50 | K=200 |
 |---|---|---|---|---|
-| antmaze-medium | FBWM | **32/100** | **11/100** | 4/100 |
-| antmaze-medium | JEPA WM | 12/100 | 5/100 | 2/100 |
+| antmaze-medium | FBWM | **48/150** (14 / 16 / 18 per seed) | **15/150** | 7/150 |
+| antmaze-medium | JEPA WM | 19/150 (6 / 7 / 6 per seed) | 6/150 | 3/150 |
 | antmaze-medium | LeWM (state) | 7 | 4 | 3 |
 | antmaze-medium | DINO-WM (raw state) | 10 | 4 | 2 |
 | antmaze-large | FBWM | **13** | **4** | 0 |
