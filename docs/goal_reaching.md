@@ -227,3 +227,24 @@ Checkpoints: JEPA PhiMap `models/2026-11-22_14-53-3*_JEPAWM-phimap-antmaze_mediu
 FBWM 256 `2026-11-22_14-53-34_FBWM-gphi-antmaze_medium*`; online cons `2026-11-22_15-16-38_FBWM-gphi-onlinecons-antmaze_medium`.
 Eval runs: `hpc/logs/2026-11-22_16-3*_WMGOAL-*-fair_am_*` (name = `fair_am_<model>_s<seed>_<gk10|gk50|gk200>_h5_norm`, `_geom`).
 Old reference rows: the checkpoints and run folders listed in (A) (FBWM 64 s1-3, JEPA MLP s1-3). The table was built by a one-off script from these eval_log.csv / diag_geom.csv files (success = `goal_k<K>_mean` x 50, tag final).
+
+
+### Matched comparison, antmaze-large navigate and FBWM online target s1-3 (2026-11-22)
+
+Same protocol as above (PhiMap 256 for every latent, FBWM optimiser, distance MPPI H=5 mppi_norm, 50 pairs / K / seed).
+
+| latent | K=10 | K=50 | K=200 | Spearman |
+|---|---|---|---|---|
+| JEPA PhiMap 256, VICReg | 16/150 (11%, 7-17) [4 6 6] | 4/150 (3%, 1-7) [2 1 1] | 0/150 (0%, 0-2) [0 0 0] | 0.72 0.71 0.70 |
+| JEPA PhiMap 256, LeWM loss | 9/150 (6%, 3-11) [4 3 2] | 3/150 (2%, 1-6) [1 1 1] | 0/150 (0%, 0-2) [0 0 0] | 0.61 0.61 0.61 |
+| FBWM 256 | 48/150 (32%, 25-40) [16 12 20] | 22/150 (15%, 10-21) [5 6 11] | 6/150 (4%, 2-8) [2 1 3] | 0.92 0.91 0.91 |
+
+- antmaze-large: FBWM 32% (25-40) vs JEPA VICReg 11% (7-17) and LeWM loss 6% (3-11) at K=10, no CI overlap; K=50 15% vs 2-3%, no
+  overlap either. Spearman 0.91-0.92 vs 0.61-0.72. The medium result holds on the larger maze.
+- antmaze-medium, FBWM with the online consistency target, seeds 1-3: 51/150 (34%, 27-42) [18 17 16] at K=10 (EMA target: 55/150), Spearman
+  0.92 on every seed. The FB loss alone prevents collapse, on 3 seeds.
+- cube-single: evals still running (FBWM s2-3 still training). Partial: JEPA VICReg K=10 106/150 (71%), LeWM loss 87/150, FBWM s1 22/50
+  (44%), Spearman ~0.6 for all three. FBWM loses on cube, as before the matching.
+
+Eval runs: `hpc/logs/2026-11-22_*_WMGOAL-*-fair_al_*`, `*-fair_am_fbwm256oc_s*`, `*-fair_cube_*`. Checkpoints: `models/2026-11-22_16-48-0*_{FBWM-gphi,JEPAWM-phimap,JEPAWM-phimap-sigreg-online}-antmaze_large*`,
+`models/2026-11-22_16-48-03_FBWM-gphi-onlinecons-antmaze_medium*`, `models/2026-11-22_17-*_{FBWM-gphi,JEPAWM-phimap*}-cube_single*`.
