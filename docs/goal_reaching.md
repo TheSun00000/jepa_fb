@@ -185,3 +185,7 @@ which with cube's 4 cm radius are almost all -1, so it is not used to judge thes
 
 Discount 0.99 + bc 1-3 roughly quadruples near-goal success; z_dim does not matter; official tasks stay ~0 (TD-JEPA's FB_deep: 49.6%).
 Untested from TD-JEPA's recipe: orthonormality coefficient 100-1000, 1M steps, 4x512 networks, flow-BC.
+
+Latent-distance MPPI (H=5, mppi_norm, same pairs) on the cube-fix checkpoints, / 50, K = 10 / 50 / 200: bc 1.0 30 / 8 / 13,
+bc 3.0 33 / 9 / 16, bc 3.0 z50 35 / 13 / 10 (old FBWM 21 / 11 / 16; JEPA WM 39 / 13 / 18; LeWM 43 / 11 / 13; DINO-WM 30 / 12 / 10).
+Runs: `hpc/logs/2026-11-22_14-*_WMGOAL-fbwm-cubefix_*`.
