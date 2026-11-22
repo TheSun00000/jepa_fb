@@ -164,5 +164,5 @@ Dated session notes, newest last.
   planners (user: it uses a learned value); it needs a goal-conditioned value baseline (GCIQL / HIQL), not done.
 - Bugs on the way: zsh does not split `$VAR` in `for`/`set --` (two queue batches ran with one K or an empty ckpt; requeued);
   `wm_baselines.py` receding assert blocked planner=mppi (fixed). JEPA seed 2 and FBWM seed 2 timed out on slow nodes (JEPA rerun done,
-  FBWM seed 2 rerun done; its FB-goal evals were still running at the end of the session).
+  FBWM seed 2 rerun done; FB-goal actor seed 2: 41 / 24 / 18, official 1 / 50).
 - Cancelled at the user's request: FB heads on the frozen JEPA WM for goal reaching (job 555171), already in the paper (Table 1).

@@ -108,6 +108,8 @@ reference would be a goal-conditioned value method (e.g. OGBench's GCIQL / HIQL)
 | FB-goal MPPI + root check | 42 | 30 | 31 | 24 | 14 | 0 |
 | FB-goal MPPI, no root check | 29 | 22 | 21 | 22 | 11 | 0 |
 | FB-goal MPPI init-policy + root | 44 | 31 | 30 | 25 | 12 | 0 |
+| FB-goal actor, seeds 2 / 3 | 41 / 41 | | 24 / 25 | | 18 / 14 | 1 / 2 |
+| FB-goal MPPI init-policy + root, seeds 2 / 3 | 41 / 43 | | 26 / 29 | | 15 / 12 | |
 
 Distance planning at other horizons (H = 3, 10, 20, 50) is in `tools/goal_results.py`: no horizon fixes it, and long
 horizons hurt FBWM on near goals.
