@@ -193,3 +193,37 @@ Geometry on the cube-fix checkpoints (probe R^2 / Spearman latent dist vs displa
 bc 1.0 0.95 / 0.54 / 0.38 / 0.40; bc 3.0 0.95 / 0.54 / 0.34 / 0.40; bc 3.0 z50 0.96 / 0.51 / 0.35 / 0.39; old FBWM 0.91 / 0.56 /
 0.44 / 0.41; JEPA 0.94 / 0.51 / 0.35 / 0.26. On cube the FB latent's spatial geometry equals JEPA's (unlike the mazes: 0.92 vs 0.52);
 only its correlation with temporal distance is higher. Runs: `hpc/logs/2026-11-22_14-39-*_WMGOAL-fbwm-cubefix_*_geom-cube_single`.
+
+
+## Matched encoder and optimiser (2026-11-22): the comparison the latent claim rests on
+
+The earlier rows (A) compared FBWM (PhiMap 64, lr 1e-4, batch 1024, EMA every step, consistency_coef 5) with a JEPA WM that differed in
+encoder (TD-MPC MLP 256), optimiser and consistency weight (docs/decisions.md 2026-11-22). Here every JEPA WM uses fbwm.py's PhiMap
+encoder and FBWM's optimiser (`tdmpc_adapt.py encoder=phimap lr=1e-4 batch_size=1024 update_freq=1 consistency_coef=5`), so only the
+anti-collapse objective differs. antmaze-medium navigate, same 50 pairs per K, wm_goal.py distance MPPI (H=5, mppi_norm), 500k updates.
+Cells: successes pooled over seeds 1-3 / 150 (%, Wilson 95% CI) [per seed]; last column: Spearman of latent distance vs real displacement per seed.
+
+| latent | K=10 | K=50 | K=200 | Spearman (latent dist vs displacement) |
+|---|---|---|---|---|
+| jepa mlp256 (old, mismatched) | 19/150 (13%, 8-19) [6 7 6] | 6/150 (4%, 2-8) [3 1 2] | 3/150 (2%, 1-6) [1 1 1] | 0.52 0.52 (s2, s3) |
+| fbwm64 (old ref) | 48/150 (32%, 25-40) [14 16 18] | 15/150 (10%, 6-16) [4 4 7] | 7/150 (5%, 2-9) [3 3 1] | 0.92 0.92 0.92 |
+| jepa phimap64 VICReg | 23/150 (15%, 10-22) [7 7 9] | 5/150 (3%, 1-8) [2 2 1] | 4/150 (3%, 1-7) [1 2 1] | 0.64 0.67 0.66 |
+| jepa phimap256 VICReg | 24/150 (16%, 11-23) [9 7 8] | 7/150 (5%, 2-9) [2 3 2] | 4/150 (3%, 1-7) [1 2 1] | 0.68 0.69 0.69 |
+| jepa phimap256 SIGReg online (LeWM loss) | 21/150 (14%, 9-20) [7 6 8] | 4/150 (3%, 1-7) [1 1 2] | 5/150 (3%, 1-8) [2 2 1] | 0.61 0.62 0.60 |
+| fbwm phi256 | 55/150 (37%, 29-45) [18 16 21] | 18/150 (12%, 8-18) [7 5 6] | 10/150 (7%, 4-12) [2 3 5] | 0.92 0.92 0.92 |
+| fbwm phi256 online cons | 18/50 (36%, 24-50) [18] | 6/50 (12%, 6-24) [6] | 4/50 (8%, 3-19) [4] | 0.92 |
+
+- FBWM's latent beats every matched JEPA latent at K=10: 37% (29-45) vs 14-16% (9-23), the CIs do not overlap. At K=50 the gap
+  is the same size but the CIs touch (12% vs 3-5%); K=200 is at the noise floor for every latent.
+- Matching the encoder and optimiser helps the JEPA WM a little (K=10 13% -> 15-16%, Spearman 0.52 -> 0.64-0.69), far from FBWM (0.92).
+- LeWM's loss on the same backbone (SIGReg, online target) is no better than VICReg (14%, Spearman 0.60-0.62).
+- Width 256 does not hurt FBWM here (37% vs 32% for the tuned width 64), unlike the reward tasks on cheetah / quadruped.
+- Online consistency target (no EMA, seed 1): same latent statistics, same success (18/50) and geometry (0.92) as with the EMA target.
+  The FB loss alone prevents collapse in this run. One seed.
+- No collapse in any JEPA run: latent rank 49.6-49.7 / 50, std ~1.0 at 500k.
+
+Checkpoints: JEPA PhiMap `models/2026-11-22_14-53-3*_JEPAWM-phimap-antmaze_medium*` (64: s1 `..._14-53-34_..._`, s2 `..._14-53-34_...`, s3
+`..._14-53-33_...`; 256: s1 `..._14-53-34_...___`, s2 `..._14-53-34_..._`, s3 `..._14-53-36_...`); SIGReg `2026-11-22_15-16-3*_JEPAWM-phimap-sigreg-online-antmaze_medium*`;
+FBWM 256 `2026-11-22_14-53-34_FBWM-gphi-antmaze_medium*`; online cons `2026-11-22_15-16-38_FBWM-gphi-onlinecons-antmaze_medium`.
+Eval runs: `hpc/logs/2026-11-22_16-3*_WMGOAL-*-fair_am_*` (name = `fair_am_<model>_s<seed>_<gk10|gk50|gk200>_h5_norm`, `_geom`).
+Old reference rows: the checkpoints and run folders listed in (A) (FBWM 64 s1-3, JEPA MLP s1-3). The table was built by a one-off script from these eval_log.csv / diag_geom.csv files (success = `goal_k<K>_mean` x 50, tag final).
