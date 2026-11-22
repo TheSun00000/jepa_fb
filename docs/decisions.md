@@ -153,3 +153,16 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
   official) + one MPPI row (init-policy + root check). K=200 is at the noise floor for distance planners.
 - Cube reset caveat: obs[18] (gripper contact) differs after the reset by 0.3-0.8 (needs a physics step); positions are exact. Accepted.
 - Every proposed experiment goes to a Sonnet reviewer first, with the list of what was already run (user, 2026-11-21).
+
+## 2026-11-22: matched encoder and optimiser for the FBWM vs JEPA WM latent comparison
+- Problem (user): FBWM is not "JEPA WM + FB". FBWM gphi uses a PhiMap encoder of width 64 (torch init, LayerNorm+tanh),
+  lr 1e-4, batch 1024, EMA every step, consistency_coef 5. The JEPA WM uses the TD-MPC MLP encoder of width 256 (ELU), lr 1e-3,
+  batch 512, EMA every 2 steps, consistency_coef 2, plus VICReg. The latent gap in docs/goal_reaching.md (A) mixed objective with encoder and optimiser.
+- Decision (user): the same PhiMap encoder and FBWM's optimiser for both, so that only the objective differs (FB + consistency vs
+  VICReg + consistency). Dropping VICReg in FBWM is accepted: in the paper, FB *replaces* VICReg as the anti-collapse term.
+- Code: `tdmpc_adapt.py encoder=phimap enc_dim=<w>` (PhiMap copied verbatim from fbwm.py) and `update_freq=`; `fbwm.py freeze_wm`
+  and `wm_goal.py` read either encoder from the checkpoint. Defaults unchanged.
+- Staged (Sonnet review + user): antmaze-medium seeds 1-3 first. JEPA PhiMap at 64 (matches FBWM's tuned width; the FBWM-64 checkpoints
+  already exist) and at 256, plus FBWM phi_hidden_dim=256 (robustness; phi256 hurt FBWM on cheetah / quadruped, journal 11-16/17).
+  Then wm_goal.py distance MPPI K=10/50/200 + diag_geom. Large and cube come after, and only if the gap holds. Check JEPA latent_std / latent_rank for collapse (consistency_coef 5 was not tuned with VICReg).
+- LeWM / DINO-WM keep their own architectures (as-published baselines). The matched pair is what the latent claim rests on.
