@@ -166,3 +166,5 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
   already exist) and at 256, plus FBWM phi_hidden_dim=256 (robustness; phi256 hurt FBWM on cheetah / quadruped, journal 11-16/17).
   Then wm_goal.py distance MPPI K=10/50/200 + diag_geom. Large and cube come after, and only if the gap holds. Check JEPA latent_std / latent_rank for collapse (consistency_coef 5 was not tuned with VICReg).
 - LeWM / DINO-WM keep their own architectures (as-published baselines). The matched pair is what the latent claim rests on.
+- From 2026-11-22 (user): FBWM training jobs run with `eval_mode=policy` (no MPPI evals during training, faster). MPPI / goal
+  evals run afterwards on the checkpoint (`eval_ckpt=` / `wm_goal.py`). In those runs the unprefixed eval columns are the policy.
