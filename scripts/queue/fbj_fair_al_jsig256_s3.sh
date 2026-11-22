@@ -17,7 +17,7 @@ module load cudnn/9.8.0.87-cuda
 conda activate jax_env
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
 
-CMD="python fbwm.py env_name= dataset= bc_coef=0.3 variant=gphi eval_mode=policy consistency_coef=5 bcons_coef=2 f_encoder_grad=1 z_dim=200 eval_each_steps=25 mppi_reward=lstsq z_cov=dataset num_evals_final=20 phi_hidden_dim=256 seed=2"
+CMD="python tdmpc_adapt.py env_name=antmaze_large dataset=navigate mode=pretrain encoder=phimap enc_dim=256 lr=1e-4 batch_size=1024 update_freq=1 consistency_coef=5 reg=sigreg target=online seed=3"
 echo "Running: $CMD"
 mkdir -p models logs
-python fbwm.py env_name= dataset= bc_coef=0.3 variant=gphi eval_mode=policy consistency_coef=5 bcons_coef=2 f_encoder_grad=1 z_dim=200 eval_each_steps=25 mppi_reward=lstsq z_cov=dataset num_evals_final=20 phi_hidden_dim=256 seed=2
+python tdmpc_adapt.py env_name=antmaze_large dataset=navigate mode=pretrain encoder=phimap enc_dim=256 lr=1e-4 batch_size=1024 update_freq=1 consistency_coef=5 reg=sigreg target=online seed=3

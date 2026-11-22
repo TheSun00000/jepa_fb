@@ -17,7 +17,7 @@ module load cudnn/9.8.0.87-cuda
 conda activate jax_env
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
 
-CMD="python fbwm.py env_name= dataset= bc_coef=0.3 variant=gphi eval_mode=policy consistency_coef=5 bcons_coef=2 f_encoder_grad=1 z_dim=200 eval_each_steps=25 mppi_reward=lstsq z_cov=dataset num_evals_final=20 phi_hidden_dim=256 seed=1"
+CMD="python fbwm.py env_name=cube_single dataset=play bc_coef=0.3 variant=gphi eval_mode=policy consistency_coef=5 bcons_coef=2 f_encoder_grad=1 z_dim=200 eval_each_steps=25 mppi_reward=lstsq z_cov=dataset num_evals_final=20 phi_hidden_dim=256 seed=3"
 echo "Running: $CMD"
 mkdir -p models logs
-python fbwm.py env_name= dataset= bc_coef=0.3 variant=gphi eval_mode=policy consistency_coef=5 bcons_coef=2 f_encoder_grad=1 z_dim=200 eval_each_steps=25 mppi_reward=lstsq z_cov=dataset num_evals_final=20 phi_hidden_dim=256 seed=1
+python fbwm.py env_name=cube_single dataset=play bc_coef=0.3 variant=gphi eval_mode=policy consistency_coef=5 bcons_coef=2 f_encoder_grad=1 z_dim=200 eval_each_steps=25 mppi_reward=lstsq z_cov=dataset num_evals_final=20 phi_hidden_dim=256 seed=3

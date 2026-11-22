@@ -17,7 +17,7 @@ module load cudnn/9.8.0.87-cuda
 conda activate jax_env
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
 
-CMD="python tdmpc_adapt.py env_name= dataset= mode=pretrain encoder=phimap enc_dim=256 lr=1e-4 batch_size=1024 update_freq=1 consistency_coef=5 seed=1"
+CMD="python tdmpc_adapt.py env_name=antmaze_large dataset=navigate mode=pretrain encoder=phimap enc_dim=256 lr=1e-4 batch_size=1024 update_freq=1 consistency_coef=5 reg=sigreg target=online seed=2"
 echo "Running: $CMD"
 mkdir -p models logs
-python tdmpc_adapt.py env_name= dataset= mode=pretrain encoder=phimap enc_dim=256 lr=1e-4 batch_size=1024 update_freq=1 consistency_coef=5 seed=1
+python tdmpc_adapt.py env_name=antmaze_large dataset=navigate mode=pretrain encoder=phimap enc_dim=256 lr=1e-4 batch_size=1024 update_freq=1 consistency_coef=5 reg=sigreg target=online seed=2
