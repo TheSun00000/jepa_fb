@@ -166,3 +166,8 @@ Dated session notes, newest last.
   `wm_baselines.py` receding assert blocked planner=mppi (fixed). JEPA seed 2 and FBWM seed 2 timed out on slow nodes (JEPA rerun done,
   FBWM seed 2 rerun done; FB-goal actor seed 2: 41 / 24 / 18, official 1 / 50).
 - Cancelled at the user's request: FB heads on the frozen JEPA WM for goal reaching (job 555171), already in the paper (Table 1).
+
+## 2026-11-22 (evening): bcons_coef=0 ablation queued (user away 2 h)
+- Proposed A (seeds 4-5 for FBWM + FB), B (bcons off), C (JEPA WM pretrains s4-5), D (model-free best-of-K by F); a Sonnet reviewer found none run before and ranked B first. The user chose B only.
+- B: fbwm.py paper config with bcons_coef=0, walker / cheetah / quadruped, seeds 1-3, jobs 581184-581193 (`fbj_bcons0_*`). Each job trains with eval_mode=policy, then runs the table's N=10k MPPI eval (20 episodes, root check, lstsq, dataset Cov, no mppi_norm) on its own checkpoint, found by the new `tools/find_fbwm.sh ENV SEED key=value` (exits 1 if none, so the eval never runs with an empty eval_ckpt). The eval is chained in the H100 job rather than sent to V100 afterwards because nobody was there to queue it.
+- Compare with Table 1 FBWM (622 / 441 / 587) per seed, from the `zlabels` rows of the eval runs.
