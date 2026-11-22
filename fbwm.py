@@ -110,6 +110,12 @@ if __name__ == '__main__':
     # 2026-11-22: the frozen JEPA WM can have the TD-MPC MLP encoder (tdmpc_adapt.py encoder=mlp) or the PhiMap trunk (encoder=phimap);
     # the type and hidden width are read from the checkpoint.
     FROZEN_WM_PHIMAP, FROZEN_WM_WIDTH = False, None
+    # cons_target=ema|online (2026-11-22, user-approved ablation): the target of the latent consistency loss. ema (default) = the EMA
+    # encoder phi_bar(s_t), no gradient. online = the online phi(s_t), gradient through it (as LeWM: no EMA, no stop-gradient), to test
+    # whether the FB loss alone prevents collapse. FB's own EMA targets (target F, target B) and the B-space consistency target stay EMA.
+    CONS_TARGET = str(kwargs.get('cons_target', 'ema'))
+    assert CONS_TARGET in ('ema', 'online'), "cons_target=ema|online"
+    assert not (FREEZE_WM and CONS_TARGET == 'online'), "cons_target is not used with freeze_wm (no consistency loss)"
     if FREEZE_WM:
         with open(WM_CKPT, 'rb') as f:
             _wm_enc = pickle.load(f)['encoder']
@@ -123,7 +129,7 @@ if __name__ == '__main__':
     now = datetime.now()
     date_time_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
-    exp_name = f'FBWM-{VARIANT}{"-identity" if PHI_IDENTITY else ""}{"-frozenwm" if FREEZE_WM else ""}-{ENV_NAME}'
+    exp_name = f'FBWM-{VARIANT}{"-identity" if PHI_IDENTITY else ""}{"-frozenwm" if FREEZE_WM else ""}{"-onlinecons" if CONS_TARGET == "online" else ""}-{ENV_NAME}'
 
     while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
         LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
@@ -853,6 +859,7 @@ if __name__ == '__main__':
     class TDMPCFBConfig:
         variant:             str   = 'gphi'  # 'sepB' | 'gphi' (set from the required variant= flag; see the top of the script)
         frozen_wm:           bool  = False   # gphi only. phi = TD-MPC MLP encoder + dynamics loaded from a reward-free JEPA world model, never updated (see wm_ckpt=)
+        cons_target:         str   = 'ema'   # consistency target: ema (phi_bar, no gradient) | online (phi, with gradient); see cons_target=
         frozen_wm_phimap:    bool  = False   # set from wm_ckpt: the frozen encoder is a PhiMap (width phi_hidden_dim) instead of the TD-MPC MLP (enc_dim)
         phi_identity:        bool  = False   # gphi only. True: phi(s) = s (no encoder): F, B, pi act on the raw observation; the world model predicts the next raw state
         # optimisation (FB values: lr 1e-4, batch 1024, target EMA at every update)
@@ -1124,6 +1131,7 @@ if __name__ == '__main__':
             # ── phi + dynamics (+ g for gphi): latent consistency, B-space consistency (gphi), orthonormality on phi ──
             def model_loss_fn(params, b_params, f_params):
                 h0 = self.encode(params['encoder'], obs[0])
+                cons_tgt = self.encode(params['encoder'], obs[1:]) if c.cons_target == 'online' else target_h   # (H,B,L)
 
                 def rollout_step(h, xs):
                     a_t, target_h_t, target_B_t, rho = xs
@@ -1137,7 +1145,7 @@ if __name__ == '__main__':
                     return h_next, (h_next, cons, bcons)
 
                 xs_B = target_h if target_B_all is None else target_B_all       # placeholder of the right shape for sepB
-                _, (hs_next, cons, bcons) = jax.lax.scan(rollout_step, h0, (action, target_h, xs_B, rho_t))   # (H,B,..)
+                _, (hs_next, cons, bcons) = jax.lax.scan(rollout_step, h0, (action, cons_tgt, xs_B, rho_t))   # (H,B,..)
                 consistency_loss = cons.sum(0).mean()
                 bcons_loss       = bcons.sum(0).mean()
                 ortho_loss       = jnp.zeros(()) if c.phi_identity else gram_ortho(h0)
@@ -1341,7 +1349,8 @@ if __name__ == '__main__':
             h = self.encode(ts.params['encoder'], obs)
             return self.pi(ts.pi_params, h, zs, None, 0.0)
 
-    tdmpc_config = TDMPCFBConfig(variant=VARIANT, bc_coef=BC_COEF, batch_size=BATCH_SIZE, horizon=HORIZON, phi_identity=PHI_IDENTITY, frozen_wm=FREEZE_WM)
+    tdmpc_config = TDMPCFBConfig(variant=VARIANT, bc_coef=BC_COEF, batch_size=BATCH_SIZE, horizon=HORIZON, phi_identity=PHI_IDENTITY, frozen_wm=FREEZE_WM,
+                                 cons_target=CONS_TARGET)
     for name in ('lr', 'discount', 'consistency_coef', 'bcons_coef', 'ortho_coef', 'b_ortho_coef', 'f_encoder_grad',
                  'b_encoder_grad', 'q_loss_coef', 'mix_ratio', 'stddev', 'tau'):
         if name in kwargs:

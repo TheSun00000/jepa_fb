@@ -7,6 +7,8 @@ pretrain: TD-MPC v1 encoder and residual dynamics (same networks and sphere-proj
 the latent consistency loss (EMA target encoder, H-step rollout) plus VICReg variance / covariance terms on the encoded latents
 (anti-collapse). Saves wm_final.pickle. encoder=phimap (2026-11-22): the encoder is fbwm.py's gphi trunk PhiMap (hidden width enc_dim, default
 256) instead of the TD-MPC MLP, so the JEPA WM and FBWM gphi (phi_hidden_dim=256) share the encoder; run folder JEPAWM-phimap-<env>.
+reg=sigreg target=online (2026-11-22): LeWM's loss on this backbone, SIGReg instead of VICReg and the online encoder as the consistency
+target (no EMA, no stop-gradient); run folder JEPAWM-phimap-sigreg-online-<env>.
 adapt: loads and freezes the encoder and dynamics. q_data=labeled: Q / policy from the N labelled (s, a, r, s') only, true r,
 one-step TD (no dataset access at adaptation time; run folder TDMPC-adaptL-...). Otherwise: (1) fits a reward head R(h, a) on n_labels labelled transitions, (2) trains
 Q1, Q2 and the policy prior with TD-MPC's value / policy losses for adapt_steps updates, with rewards from that head,
@@ -99,6 +101,19 @@ if __name__ == '__main__':
     ENCODER = str(kwargs.get('encoder', 'mlp'))
     assert ENCODER in ('mlp', 'phimap'), "encoder=mlp|phimap"
     ENC_DIM = int(kwargs['enc_dim']) if 'enc_dim' in kwargs else 256
+    # reg=vicreg|sigreg, target=ema|online (2026-11-22, "LeWM's loss on our backbone", mode=pretrain only):
+    #   reg=vicreg (default): VICReg variance + covariance on phi(s_0) (var_coef, cov_coef), as before.
+    #   reg=sigreg: LeWM's SIGReg (port of wm_baselines.py / LeWM's module.py) instead of VICReg, sigreg_coef (default 0.09, LeWM's config)
+    #     x num_proj random unit directions (default 1024, redrawn every update), on the sphere-projected online latents of every frame s_0..s_H.
+    #   target=ema (default): consistency target = EMA encoder phi_bar(s_t), no gradient.
+    #   target=online: consistency target = the online phi(s_t), gradient through it (LeWM: no EMA, no stop-gradient).
+    #   The rollout loss itself is unchanged (H-step latent rollout, rho^t weights), LeWM predicts teacher-forced one step at a time.
+    REG    = str(kwargs.get('reg', 'vicreg'))
+    TARGET = str(kwargs.get('target', 'ema'))
+    assert REG in ('vicreg', 'sigreg') and TARGET in ('ema', 'online'), "reg=vicreg|sigreg target=ema|online"
+    assert MODE == 'pretrain' or ('reg' not in kwargs and 'target' not in kwargs), "reg= / target= are mode=pretrain options"
+    SIGREG_COEF = float(kwargs['sigreg_coef']) if 'sigreg_coef' in kwargs else 0.09
+    NUM_PROJ    = int(kwargs['num_proj']) if 'num_proj' in kwargs else 1024
     if MODE == 'adapt':
         with open(kwargs['wm_ckpt'], 'rb') as f:
             _wm_enc = pickle.load(f)['encoder']
@@ -122,7 +137,8 @@ if __name__ == '__main__':
     now = datetime.now()
     date_time_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
-    exp_name = (f'JEPAWM{"-phimap" if ENCODER == "phimap" else ""}-{ENV_NAME}' if MODE == 'pretrain' else
+    exp_name = (f'JEPAWM{"-phimap" if ENCODER == "phimap" else ""}{"-sigreg" if REG == "sigreg" else ""}{"-online" if TARGET == "online" else ""}-{ENV_NAME}'
+                if MODE == 'pretrain' else
                 f'TDMPC-adapt{ {"labeled": "L", "labeled_model": "LM"}.get(kwargs.get("q_data"), "")}-{ENV_NAME}-{TASK}')   # adaptL / adaptLM: no dataset access
 
     while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
@@ -139,7 +155,7 @@ if __name__ == '__main__':
 
     save_self_copy(dst_dir=LOGS_FOLDER)
 
-    TRAIN_METRICS = (["total_loss", "consistency_loss", "var_loss", "cov_loss", "grad_norm", "latent_std", "latent_rank"]
+    TRAIN_METRICS = (["total_loss", "consistency_loss", "var_loss", "cov_loss", "grad_norm", "latent_std", "latent_rank", "sigreg_loss"]
                      if MODE == 'pretrain' else ["phase", "reward_loss", "value_loss", "pi_loss", "q_mean", "grad_norm"])
     train_logger = CSVLogger(
         filepath=f"{LOGS_FOLDER}/training_log.csv",
@@ -632,6 +648,21 @@ if __name__ == '__main__':
                 x = nn.relu(TorchDense(self.hidden_dim)(x))
             return TorchDense(self.out_dim)(x)
 
+    # SIGReg (LeWM's module.py; same code as wm_baselines.py)
+    _SIG_KNOTS = 17
+    _SIG_T     = jnp.linspace(0.0, 3.0, _SIG_KNOTS)
+    _SIG_DT    = 3.0 / (_SIG_KNOTS - 1)
+    _SIG_PHI   = jnp.exp(-_SIG_T ** 2 / 2.0)
+    _SIG_W     = jnp.full((_SIG_KNOTS,), 2 * _SIG_DT).at[0].set(_SIG_DT).at[-1].set(_SIG_DT) * _SIG_PHI
+
+    def sigreg(z, key):
+        """z (T, B, D): Epps-Pulley statistic of NUM_PROJ random 1-d projections against N(0, 1), per frame, averaged."""
+        A = jax.random.normal(key, (z.shape[-1], NUM_PROJ))
+        A = A / jnp.linalg.norm(A, axis=0, keepdims=True)
+        x_t = (z @ A)[..., None] * _SIG_T                                            # (T, B, M, K)
+        err = (jnp.cos(x_t).mean(-3) - _SIG_PHI) ** 2 + jnp.sin(x_t).mean(-3) ** 2   # (T, M, K)
+        return ((err @ _SIG_W) * z.shape[-2]).mean()
+
     class QNet(nn.Module):
         """TD-MPC `q`: Linear -> LayerNorm -> Tanh -> Linear -> ELU -> Linear(1); last layer starts at zero."""
         mlp_dim: int
@@ -667,6 +698,10 @@ if __name__ == '__main__':
         latent_dim:        int   = 50
         enc_dim:           int   = 256
         encoder:           str   = 'mlp'    # mlp: TD-MPC encoder; phimap: fbwm.py's gphi trunk (see encoder=)
+        reg:               str   = 'vicreg' # pretrain anti-collapse term: vicreg | sigreg (see reg=)
+        target:            str   = 'ema'    # pretrain consistency target: ema (phi_bar, no gradient) | online (phi, with gradient)
+        sigreg_coef:       float = 0.09
+        num_proj:          int   = 1024
         mlp_dim:           int   = 512
         horizon:           int   = 5
         rho:               float = 0.5
@@ -768,11 +803,14 @@ if __name__ == '__main__':
             c, H = self.cfg, self.cfg.horizon
             key, k_batch = jax.random.split(ts.random_key)
             obs, action, _ = replay_buffer.sample_sequences(k_batch, c.batch_size, H)
-            target_h = self.encode(ts.target_params['encoder'], obs[1:])
+            key, k_sig = jax.random.split(key)
+            ema_target_h = self.encode(ts.target_params['encoder'], obs[1:])
             rho_t = c.rho ** jnp.arange(H, dtype=jnp.float32)
 
             def loss_fn(params):
-                h0 = self.encode(params['encoder'], obs[0])
+                h_all = self.encode(params['encoder'], obs)                        # (H+1, B, L) online latents
+                h0 = h_all[0]
+                target_h = h_all[1:] if c.target == 'online' else ema_target_h      # online: gradient through the target (LeWM)
                 def step(h, xs):
                     a_t, tgt, rho = xs
                     h_next, _ = self.next(params, h, a_t)
@@ -784,12 +822,14 @@ if __name__ == '__main__':
                 var  = jnp.mean(nn.relu(1.0 - std))
                 cov  = (hc.T @ hc) / (hc.shape[0] - 1)
                 cov  = (jnp.sum(cov ** 2) - jnp.sum(jnp.diag(cov) ** 2)) / c.latent_dim
-                total = c.consistency_coef * cons / H + c.var_coef * var + c.cov_coef * cov
+                sig  = sigreg(h_all, k_sig) if c.reg == 'sigreg' else jnp.zeros(())
+                total = (c.consistency_coef * cons / H +
+                         (c.sigreg_coef * sig if c.reg == 'sigreg' else c.var_coef * var + c.cov_coef * cov))
                 s = jnp.linalg.svd(jax.lax.stop_gradient(hc), compute_uv=False)
                 p = s / s.sum()
                 rank = jnp.exp(-jnp.sum(p * jnp.log(p + 1e-12)))      # effective rank of the batch of latents
                 return total, {'consistency_loss': cons, 'var_loss': var, 'cov_loss': cov,
-                               'latent_std': std.mean(), 'latent_rank': rank}
+                               'latent_std': std.mean(), 'latent_rank': rank, 'sigreg_loss': sig}
 
             (total, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(ts.params)
             params, opt_state, gnorm = self._masked_step(self.optimizer, grads, ts.optimizer_state, ts.params, WM_KEYS)
@@ -1031,7 +1071,8 @@ if __name__ == '__main__':
             h = self.encode(ts.params['encoder'], obs)
             return self.pi(ts.pi_params, h, None, 0.0)
 
-    adapt_config = AdaptConfig(batch_size=BATCH_SIZE, horizon=HORIZON, bc_coef=BC_COEF, encoder=ENCODER, enc_dim=ENC_DIM)
+    adapt_config = AdaptConfig(batch_size=BATCH_SIZE, horizon=HORIZON, bc_coef=BC_COEF, encoder=ENCODER, enc_dim=ENC_DIM,
+                               reg=REG, target=TARGET, sigreg_coef=SIGREG_COEF, num_proj=NUM_PROJ)
     for name in ('lr', 'discount', 'consistency_coef', 'var_coef', 'cov_coef'):
         if name in kwargs:
             adapt_config = dataclasses.replace(adapt_config, **{name: float(kwargs[name])})
