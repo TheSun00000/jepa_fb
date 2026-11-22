@@ -168,3 +168,8 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 - LeWM / DINO-WM keep their own architectures (as-published baselines). The matched pair is what the latent claim rests on.
 - From 2026-11-22 (user): FBWM training jobs run with `eval_mode=policy` (no MPPI evals during training, faster). MPPI / goal
   evals run afterwards on the checkpoint (`eval_ckpt=` / `wm_goal.py`). In those runs the unprefixed eval columns are the policy.
+
+## 2026-11-22 (night): matched frozen-WM row on DMC, collapse panel (user)
+- The Table 1 "FB on frozen WM" comparison is redone with a JEPA WM that matches FBWM's encoder (PhiMap 64), optimiser (lr 1e-4, batch 1024, EMA every step) and consistency weight (5), VICReg only (the stronger JEPA baseline on the matched goal-reaching comparison: 16 / 11 / 71% vs 14 / 6 / 58% for the LeWM loss). FB on top uses the paper config. The old row (mismatched WM; cheetah also tau 0.001 / discount 0.98) is replaced once the new one is in.
+- Collapse is measured with the RankMe effective rank (exp entropy of the normalised singular values of the centred latents), the same formula in tdmpc_adapt.py, fbwm.py (training) and wm_goal.py diag_geom (checkpoints, 50k held-out states), plus n_dims_99 and the top-1 variance share. Rationale: the matched JEPA WMs already have rank 49.6-49.7 / 50, so the claim is "FB is enough to prevent collapse" (E2) and "among non-collapsed latents, FB's holds more of what planning needs" (E3: state probe, reward linear fit), not "JEPA collapses".
+- bcons_coef stays 2 (paper config); the bcons0 ablation is for the end of the project.

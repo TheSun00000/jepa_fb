@@ -180,3 +180,11 @@ Dated session notes, newest last.
 - Runs: training `hpc/logs/2026-11-22_19-04-1*_FBWM-gphi-*`, evals `hpc/logs/2026-11-22_19-4[12]-*_FBWM-gphi-*` (each eval checked to load its own bcons0 checkpoint).
   Checked (2026-11-22): training and eval configs differ only in bcons_coef (new fields are at defaults that reproduce the old code: bc_coef 0, cons_target ema, frozen_wm off); model_loss = consistency only in the bcons0 runs.
   References: `hpc/logs/2026-11-15_19-4[3-6]-*`, `19-52-04`, `19-55-02` (eval runs of the Table 1 checkpoints).
+
+## 2026-11-22 (night): core experiments for "FB shapes the latent of the world model better" (user-validated, no reviewer)
+- bcons stays in the method; the bcons0 ablation is parked for the end of the project (user).
+- Found: Table 1's "FB on frozen WM" row (and the adapted-WM row) use the mismatched DMC JEPA WMs (`tdmpc_adapt.py mode=pretrain` defaults: TD-MPC MLP 256, lr 1e-3, batch 512, consistency 2); the cheetah frozen-WM runs also used tau 0.001 / discount 0.98 (FBWM: 0.01 / 0.95). Matched JEPA WMs existed only on antmaze / cube.
+- **E1** (matched frozen-WM row, VICReg only, user): `tdmpc_adapt.py mode=pretrain encoder=phimap enc_dim=64 lr=1e-4 batch_size=1024 update_freq=1 consistency_coef=5`, walker / cheetah / quadruped s1-3 (`fbj_e1_jepa_*`), then FB on the frozen WM in the paper config + N=10k MPPI eval (`fbj_e1_frozen_*`, held with `queue.py --after` until its WM is done).
+- **E2** (collapse panel): matched JEPA WM with no regulariser (var=cov=0), EMA and online target; FBWM with EMA and online consistency target; walker + antmaze_medium, s1-3 (`fbj_e2_*`, 24 jobs). `fbwm.py` now logs `latent_rank` (RankMe on the batch, same formula as tdmpc_adapt.py) so every curve uses the same measure.
+- **E3** (latent diagnostics, eval only): `wm_goal.py diag_geom=1` now runs on dm_control: eff_rank / n_dims_99 / top1_var, ridge probe to the full state, and corr of each task reward with its ridge fit on phi(s) (and on the raw state, for reference); train on trajectories < 9000, test on 9000+. On the 9 FBWM paper checkpoints and the 9 old JEPA WMs (`fbj_e3_geom_*`), and on the new matched WMs (`fbj_e3_geom_jepa64_*`, after E1).
+- Tooling: `tools/find_run.py` (exact checkpoint lookup for chained jobs, exits 1 if none), `queue.py add --after`.
