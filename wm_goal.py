@@ -145,6 +145,11 @@ assert 1 <= RECEDING <= HORIZON
 #   rho_dist_disp   : Spearman of ||phi(s_t) - phi(s_{t+k})|| with the real goal-coordinate displacement, 20k val pairs of one
 #                     trajectory, k uniform in 1..200 (rho_dist_disp_k25: k <= 25 only)
 #   rho_dist_k      : Spearman of the latent distance with k (temporal distance); rho_disp_k: the same for the real displacement
+#   eff_rank        : effective rank (RankMe: exp entropy of the normalised singular values) of the centred latents of 50k states;
+#                     n_dims_99 / top1_var: number of directions holding 99% of the variance / share of the first one (collapse measures)
+# dm_control (2026-11-22): no goal coordinates. probe_r2 = ridge probe phi(s) -> the full (standardised) state, mean R^2 over its
+#   dimensions; rew_corr_<task> = corr of the task reward with its ridge fit on phi(s) (rew_corr_state_<task>: the same fit on the raw
+#   state, for reference); eff_rank as above. Fit on 200k states of trajectories 0..8999, tested on 50k states of trajectories 9000+.
 # Written to diag_geom.csv (one row: metric columns).
 DIAG_GEOM = flag(kwargs, 'diag_geom')
 # Near goals (OGBench only, see the docstring): goal = the dataset state GOAL_K steps after the start, in the same trajectory.
@@ -515,8 +520,57 @@ else:  # OGBench: antmaze_medium | antmaze_large | cube_single. No dataset is ne
 
 assert STATE_DIM == OBS_DIM, f'env observation dim {STATE_DIM} != checkpoint encoder input {OBS_DIM}'
 
-if DIAG_GEOM:   # latent geometry, see DIAG_GEOM above
-    assert ENV_NAME in OGBENCH_ENVS, 'diag_geom is an OGBench option'
+def _spectrum(H):
+    """Collapse measures of a batch of latents (N, L): RankMe effective rank, directions for 99% of the variance, top-1 share."""
+    Hc = np.asarray(H, dtype=np.float64)
+    Hc = Hc - Hc.mean(0)
+    sv = np.linalg.svd(Hc, compute_uv=False)
+    p = sv / sv.sum()
+    var = sv ** 2 / (sv ** 2).sum()
+    return dict(eff_rank=float(np.exp(-(p * np.log(p + 1e-12)).sum())), n_dims_99=int(np.searchsorted(np.cumsum(var), 0.99) + 1),
+                top1_var=float(var[0]), lat_dim=int(Hc.shape[1]))
+
+
+def _ridge_fit_predict(Xtr, Ytr, Xte, lam=1e-3):
+    Xtr = np.concatenate([Xtr, np.ones((len(Xtr), 1))], 1).astype(np.float64)
+    Xte = np.concatenate([Xte, np.ones((len(Xte), 1))], 1).astype(np.float64)
+    W = np.linalg.solve(Xtr.T @ Xtr + lam * np.eye(Xtr.shape[1]), Xtr.T @ Ytr)
+    return Xte @ W
+
+
+if DIAG_GEOM and ENV_NAME not in OGBENCH_ENVS:   # dm_control latent diagnostics, see DIAG_GEOM above
+    _rng = np.random.default_rng(0)
+    _traj = np.arange(len(dataset_obs)) // TRAJECTORY_LEN
+    _cut = int(0.9 * NUM_TRAJECTORIES)
+    _itr = _rng.choice(np.flatnonzero(_traj < _cut), 200_000, replace=False)
+    _ite = _rng.choice(np.flatnonzero(_traj >= _cut), 50_000, replace=False)
+
+    def _enc(o):
+        return np.concatenate([np.asarray(encode_batch(PARAMS, jnp.asarray(o[i:i + 50_000]))) for i in range(0, len(o), 50_000)])
+
+    _Otr, _Ote = dataset_obs[_itr].astype(np.float32), dataset_obs[_ite].astype(np.float32)
+    _Htr, _Hte = _enc(_Otr), _enc(_Ote)
+    _mu, _sd = _Otr.mean(0), _Otr.std(0) + 1e-6
+    _Ytr, _Yte = (_Otr - _mu) / _sd, (_Ote - _mu) / _sd
+    _P = _ridge_fit_predict(_Htr, _Ytr, _Hte)
+    _keep = _Yte.std(0) > 1e-3                                 # constant state dimensions have no R^2
+    geom = dict(src=SRC, ckpt=CKPT, n_train=len(_itr), n_test=len(_ite),
+                probe_r2=float(np.mean(1 - ((_P - _Yte) ** 2).sum(0)[_keep] / ((_Yte - _Yte.mean(0)) ** 2).sum(0)[_keep])),
+                **_spectrum(_Hte))
+    _rc, _rs = [], []
+    for fn, label, param in benchmarks:
+        _rtr = np.asarray(fn(jnp.asarray(dataset_aux[_itr]), param), dtype=np.float64)
+        _rte = np.asarray(fn(jnp.asarray(dataset_aux[_ite]), param), dtype=np.float64)
+        geom[f'rew_corr_{label}'] = float(np.corrcoef(_ridge_fit_predict(_Htr, _rtr, _Hte), _rte)[0, 1])
+        geom[f'rew_corr_state_{label}'] = float(np.corrcoef(_ridge_fit_predict(_Ytr, _rtr, _Yte), _rte)[0, 1])
+        _rc.append(geom[f'rew_corr_{label}']); _rs.append(geom[f'rew_corr_state_{label}'])
+    geom['rew_corr_mean'], geom['rew_corr_state_mean'] = float(np.mean(_rc)), float(np.mean(_rs))
+    CSVLogger(f'{LOGS_FOLDER}/diag_geom.csv', list(geom)).log(geom)
+    print('diag_geom:', geom)
+    add_text_to_file(f'{LOGS_FOLDER}/info.txt', f"finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    sys.exit(0)
+
+if DIAG_GEOM:   # latent geometry (OGBench), see DIAG_GEOM above
     from utils.ogbench_tasks import goal_coords as _goal_coords
     _dir = os.path.expanduser(kwargs.get('ogbench_dir', '~/.ogbench/data'))
     _, _tr, _va = ogbench.make_env_and_datasets(ogb_name, dataset_dir=_dir, compact_dataset=True)
@@ -556,7 +610,7 @@ if DIAG_GEOM:   # latent geometry, see DIAG_GEOM above
     _near = _k <= 25
     geom = dict(src=SRC, ckpt=CKPT, n_pairs=int(len(_s)), probe_r2=probe_r2, rho_dist_disp=_spearman(_d_lat, _d_real),
                 rho_dist_disp_k25=_spearman(_d_lat[_near], _d_real[_near]), rho_dist_k=_spearman(_d_lat, _k),
-                rho_disp_k=_spearman(_d_real, _k), lat_dist_mean=float(_d_lat.mean()))
+                rho_disp_k=_spearman(_d_real, _k), lat_dist_mean=float(_d_lat.mean()), **_spectrum(_Hva))
     CSVLogger(f'{LOGS_FOLDER}/diag_geom.csv', list(geom)).log(geom)
     print('diag_geom:', geom)
     add_text_to_file(f'{LOGS_FOLDER}/info.txt', f"finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")

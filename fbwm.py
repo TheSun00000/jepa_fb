@@ -149,7 +149,8 @@ if __name__ == '__main__':
                      "model_enc_grad_norm", "f_enc_grad_norm", "b_enc_grad_norm",
                      "fb_loss", "fb_diag", "fb_offdiag", "q_loss", "b_ortho_loss", "f_grad_norm", "b_grad_norm", "M1", "F_norm",
                      "pi_loss", "q_mean", "bhead_loss",
-                     "latent_std", "feat_cov_l2", "feat_mean_norm", "b_std", "b_cov_l2", "b_mean_norm", "fcons_loss"]
+                     "latent_std", "feat_cov_l2", "feat_mean_norm", "b_std", "b_cov_l2", "b_mean_norm", "fcons_loss",
+                     "latent_rank"]   # latent_rank (2026-11-22): RankMe effective rank of phi(s_0) on the batch, as tdmpc_adapt.py
     train_logger = CSVLogger(
         filepath=f"{LOGS_FOLDER}/training_log.csv",
         fieldnames=["step"] + TRAIN_METRICS + ["time"],
@@ -1160,7 +1161,9 @@ if __name__ == '__main__':
                 model_loss = ((c.consistency_coef * consistency_loss + c.bcons_coef * bcons_loss + c.fcons_coef * fcons_loss) / H
                               + c.ortho_coef * ortho_loss)
                 std, cov_l2, mean_norm = feature_stats(h0)
-                aux = {'hs_next': hs_next, 'consistency_loss': consistency_loss, 'bcons_loss': bcons_loss, 'ortho_loss': ortho_loss,
+                _sv = jnp.linalg.svd(jax.lax.stop_gradient(h0 - h0.mean(axis=0)), compute_uv=False)
+                _p = _sv / _sv.sum()
+                aux = {'latent_rank': jnp.exp(-jnp.sum(_p * jnp.log(_p + 1e-12))),'hs_next': hs_next, 'consistency_loss': consistency_loss, 'bcons_loss': bcons_loss, 'ortho_loss': ortho_loss,
                        'fcons_loss': fcons_loss,
                        'latent_std': std, 'feat_cov_l2': cov_l2, 'feat_mean_norm': mean_norm}
                 return model_loss, aux
@@ -1254,7 +1257,7 @@ if __name__ == '__main__':
                 'pi_loss': pi_loss, 'q_mean': q_mean, 'bhead_loss': bhead_loss,
                 'latent_std': m_aux['latent_std'], 'feat_cov_l2': m_aux['feat_cov_l2'], 'feat_mean_norm': m_aux['feat_mean_norm'],
                 'b_std': fb_aux['b_std'], 'b_cov_l2': fb_aux['b_cov_l2'], 'b_mean_norm': fb_aux['b_mean_norm'],
-                'fcons_loss': m_aux['fcons_loss'],
+                'fcons_loss': m_aux['fcons_loss'], 'latent_rank': m_aux['latent_rank'],
             }
             return ts, metrics
 

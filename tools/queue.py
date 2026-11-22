@@ -11,7 +11,8 @@ eval-only jobs on V100 dev (`--gpu v100`, chosen automatically when every comman
 The list lives in queue/experiments.json (local, git-ignored). Each entry has an sbatch script scripts/queue/<name>.sh (committed
 and pushed, because the cluster pulls it), written by `add` from a header and a list of shell commands (run one after the other).
 
-    tools/queue.py add NAME --time 2:00:00 --cmd "python a ..." [--cmd "python b ..."] [--title "..."] [--gpu h100|v100|a100]
+    tools/queue.py add NAME --time 2:00:00 --cmd "python a ..." [--cmd "python b ..."] [--title "..."] [--gpu h100|v100|a100] [--after N1,N2]
+                                     # --after: held until the named entries are done (a failed dependency keeps it queued)
     tools/queue.py status            # the list, the jobs on the cluster, the free slots (read-only)
     tools/queue.py submit [--dry-run] [--notify]
     tools/queue.py sync              # update done / failed from Slurm
@@ -147,8 +148,13 @@ def add(a):
     os.makedirs(os.path.join(ROOT, 'scripts', 'queue'), exist_ok=True)
     with open(os.path.join(ROOT, rel), 'w') as f:
         f.write(body)
+    after = [n if n.startswith(PREFIX) else PREFIX + n for n in (a.after.split(',') if a.after else [])]
+    unknown = [n for n in after if not any(e['name'] == n for e in q['entries'])]
+    if unknown:
+        sys.exit('--after: unknown entries %s' % unknown)
     q['entries'].append({'name': a.name, 'script': rel, 'title': a.title, 'cmds': a.cmd, 'slots': a.slots, 'gpu': gpu,
-                         'state': 'queued', 'job_id': None, 'added': datetime.now().isoformat(timespec='seconds')})
+                         'state': 'queued', 'job_id': None, 'added': datetime.now().isoformat(timespec='seconds'),
+                         **({'after': after} if after else {})})
     save(q)
     print('queued %s (%s) -> %s' % (a.name, gpu, rel))
 
@@ -205,7 +211,10 @@ def submit(a):
     if dirty or unpushed not in ('0', ''):
         sys.exit('not submitted: uncommitted changes in scripts/tools/utils/*.py or %s unpushed commit(s): commit and push first' % unpushed)
     todo = []
+    state = {e['name']: e['state'] for e in q['entries']}
     for e in queued:
+        if any(state.get(n) != 'done' for n in e.get('after', [])):   # --after: wait until every dependency is done
+            continue
         g = group_of(e)
         if e['slots'] <= gfree.get(g, 0):
             todo.append(e)
@@ -257,7 +266,8 @@ def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest='cmd', required=True)
     p = sp.add_parser('add'); p.add_argument('name'); p.add_argument('--time', default='2:00:00'); p.add_argument('--cmd', action='append', required=True)
-    p.add_argument('--title', default=''); p.add_argument('--slots', type=int, default=1); p.add_argument('--gpu', choices=list(GPUS), default=''); p.set_defaults(f=add)
+    p.add_argument('--title', default=''); p.add_argument('--slots', type=int, default=1); p.add_argument('--gpu', choices=list(GPUS), default='')
+    p.add_argument('--after', default='', help='comma-separated entry names: submit only once all of them are done'); p.set_defaults(f=add)
     sp.add_parser('status').set_defaults(f=status)
     sp.add_parser('sync').set_defaults(f=sync)
     p = sp.add_parser('submit'); p.add_argument('--dry-run', action='store_true'); p.add_argument('--notify', action='store_true'); p.set_defaults(f=submit)
