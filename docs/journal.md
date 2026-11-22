@@ -171,3 +171,11 @@ Dated session notes, newest last.
 - Proposed A (seeds 4-5 for FBWM + FB), B (bcons off), C (JEPA WM pretrains s4-5), D (model-free best-of-K by F); a Sonnet reviewer found none run before and ranked B first. The user chose B only.
 - B: fbwm.py paper config with bcons_coef=0, walker / cheetah / quadruped, seeds 1-3, jobs 581184-581193 (`fbj_bcons0_*`). Each job trains with eval_mode=policy, then runs the table's N=10k MPPI eval (20 episodes, root check, lstsq, dataset Cov, no mppi_norm) on its own checkpoint, found by the new `tools/find_fbwm.sh ENV SEED key=value` (exits 1 if none, so the eval never runs with an empty eval_ckpt). The eval is chained in the H100 job rather than sent to V100 afterwards because nobody was there to queue it.
 - Compare with Table 1 FBWM (622 / 441 / 587) per seed, from the `zlabels` rows of the eval runs.
+- **Results (bcons_coef=0, N=10k MPPI eval, 20 episodes; MPPI / policy, seeds 1/2/3; paper config bcons 2 in brackets, same seed numbers):**
+  walker 623 / 645 / 573 = 614 (577 / 672 / 615 = 621), policy 593 (574); cheetah 376 / 386 / 215 = 326 (442 / 356 / 410 = 403), policy 338 (355);
+  quadruped 627 / 671 / 628 = 642 (676 / 468 / 618 = 587), policy 631 (599). Differences by seed (MPPI): walker +46 / -27 / -42, cheetah -66 / +30 / -195, quadruped -49 / +203 / +10.
+- Reading: bcons is not needed on walker and quadruped (within noise; quadruped even tighter: 627-671 vs 468-676). On cheetah, MPPI is 77 lower on average,
+  driven by seed 3 (215). Per task, cheetah without bcons loses the backward tasks (vel2Back 602 / 689 / 345 vs 908 / ? / 759) and gains on flip (324-402 vs 309-320).
+  No collapse in cheetah s3 training (latent_std 0.90, F_norm ~120 flat). n=3, so the cheetah drop is suggestive, not established.
+- Runs: training `hpc/logs/2026-11-22_19-04-1*_FBWM-gphi-*`, evals `hpc/logs/2026-11-22_19-4[12]-*_FBWM-gphi-*` (each eval checked to load its own bcons0 checkpoint).
+  References: `hpc/logs/2026-11-15_19-4[3-6]-*`, `19-52-04`, `19-55-02` (eval runs of the Table 1 checkpoints).
