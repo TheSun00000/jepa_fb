@@ -248,3 +248,23 @@ Same protocol as above (PhiMap 256 for every latent, FBWM optimiser, distance MP
 
 Eval runs: `hpc/logs/2026-11-22_*_WMGOAL-*-fair_al_*`, `*-fair_am_fbwm256oc_s*`, `*-fair_cube_*`. Checkpoints: `models/2026-11-22_16-48-0*_{FBWM-gphi,JEPAWM-phimap,JEPAWM-phimap-sigreg-online}-antmaze_large*`,
 `models/2026-11-22_16-48-03_FBWM-gphi-onlinecons-antmaze_medium*`, `models/2026-11-22_17-*_{FBWM-gphi,JEPAWM-phimap*}-cube_single*`.
+
+
+### Matched comparison, cube-single play, seeds 1-3 (2026-11-22)
+
+| latent | K=10 | K=50 | K=200 | Spearman |
+|---|---|---|---|---|
+| JEPA PhiMap 256, VICReg | 106/150 (71%, 63-77) [35 35 36] | 38/150 (25%, 19-33) [17 10 11] | 61/150 (41%, 33-49) [22 20 19] | 0.62 0.63 0.60 |
+| JEPA PhiMap 256, LeWM loss | 87/150 (58%, 50-66) [31 28 28] | 28/150 (19%, 13-26) [10 9 9] | 43/150 (29%, 22-36) [15 13 15] | 0.63 0.61 0.62 |
+| FBWM 256 | 52/150 (35%, 28-43) [22 13 17] | 38/150 (25%, 19-33) [15 12 11] | 36/150 (24%, 18-31) [16 11 9] | 0.58 0.57 0.56 |
+
+- On cube the matched JEPA WM (VICReg) beats FBWM: K=10 71% (63-77) vs 35% (28-43), no CI overlap; K=200 41% vs 24%, CIs touch;
+  K=50 equal (25%). LeWM's loss is between them (58% at K=10). No latent tracks displacement well (Spearman 0.56-0.63).
+- So the latent claim holds on the two mazes only (medium, large); cube is a limitation, as before the matching.
+- K=200 > K=50 for every latent: not explained by easy pairs (no pair starts with the cube already within the 4 cm radius; mean
+  start-goal distance grows with K, 1.5 / 2.4 / 2.7 in goal_coords units). Likely the budget (2K env steps: 400 at K=200 vs 100 at K=50)
+  gives more time to push the cube. Unverified.
+
+Eval runs: `hpc/logs/2026-11-2*_WMGOAL-*-fair_cube_*`. Checkpoints: FBWM `models/2026-11-22_17-09-42_FBWM-gphi-cube_single` (s1),
+`..._17-29-06_...` (s2), `..._17-39-16_FBWM-gphi-cube_single` (s3); JEPA VICReg `models/2026-11-22_17-09-42` / `17-30-27` / `17-39-16_JEPAWM-phimap-cube_single`;
+LeWM loss `models/2026-11-22_17-21-42` / `17-35-55` / `17-39-27_JEPAWM-phimap-sigreg-online-cube_single`.
