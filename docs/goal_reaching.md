@@ -189,3 +189,7 @@ Untested from TD-JEPA's recipe: orthonormality coefficient 100-1000, 1M steps, 4
 Latent-distance MPPI (H=5, mppi_norm, same pairs) on the cube-fix checkpoints, / 50, K = 10 / 50 / 200: bc 1.0 30 / 8 / 13,
 bc 3.0 33 / 9 / 16, bc 3.0 z50 35 / 13 / 10 (old FBWM 21 / 11 / 16; JEPA WM 39 / 13 / 18; LeWM 43 / 11 / 13; DINO-WM 30 / 12 / 10).
 Runs: `hpc/logs/2026-11-22_14-*_WMGOAL-fbwm-cubefix_*`.
+Geometry on the cube-fix checkpoints (probe R^2 / Spearman latent dist vs displacement / same k <= 25 / Spearman latent dist vs k):
+bc 1.0 0.95 / 0.54 / 0.38 / 0.40; bc 3.0 0.95 / 0.54 / 0.34 / 0.40; bc 3.0 z50 0.96 / 0.51 / 0.35 / 0.39; old FBWM 0.91 / 0.56 /
+0.44 / 0.41; JEPA 0.94 / 0.51 / 0.35 / 0.26. On cube the FB latent's spatial geometry equals JEPA's (unlike the mazes: 0.92 vs 0.52);
+only its correlation with temporal distance is higher. Runs: `hpc/logs/2026-11-22_14-39-*_WMGOAL-fbwm-cubefix_*_geom-cube_single`.
