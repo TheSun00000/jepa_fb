@@ -168,3 +168,20 @@ the other cells: `python tools/goal_results.py --runs`.
 
 - Seeds 2-3 (FBWM and JEPA WM, antmaze-medium), antmaze-large and cube-single FBWM: training (2026-11-21 23:00).
 - The frozen-WM control is already in the paper (Table 1, DMC); not repeated here (user).
+
+## Cube fix attempt (2026-11-22, one seed each, 500k updates; TD-JEPA's OGBench settings as the guide)
+
+FB actor with z = B(goal) (no reward labels), successes / 50; the training-time official-task eval infers z from +-1 reward labels,
+which with cube's 4 cm radius are almost all -1, so it is not used to judge these runs (TD-JEPA shifts rewards by +1).
+
+| checkpoint | K=10 | K=50 | official |
+|---|---|---|---|
+| discount 0.95, bc 0.3, z 200 (`2026-11-21_22-24-09`) | 7 | 3 | 0 |
+| discount 0.99, bc 0.3 (`2026-11-22_09-34-43_FBWM-gphi-cube_single`) | 14 | 9 | 0 |
+| discount 0.99, bc 1.0 (`2026-11-22_09-34-43_FBWM-gphi-cube_single_`) | 30 | 9 | 2 |
+| discount 0.99, bc 3.0 (`2026-11-22_09-55-48`) | 26 | 12 | 2 |
+| discount 0.99, bc 3.0, z 50 (`2026-11-22_12-29-57`) | 25 | 12 | 0 |
+| plain FB (phi_identity), discount 0.99, bc 0.3 (`2026-11-22_09-34-43_FBWM-gphi-identity`) | 11 | 11 | 2 |
+
+Discount 0.99 + bc 1-3 roughly quadruples near-goal success; z_dim does not matter; official tasks stay ~0 (TD-JEPA's FB_deep: 49.6%).
+Untested from TD-JEPA's recipe: orthonormality coefficient 100-1000, 1M steps, 4x512 networks, flow-BC.
