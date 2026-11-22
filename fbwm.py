@@ -129,7 +129,7 @@ if __name__ == '__main__':
     now = datetime.now()
     date_time_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
-    exp_name = f'FBWM-{VARIANT}{"-identity" if PHI_IDENTITY else ""}{"-frozenwm" if FREEZE_WM else ""}{"-onlinecons" if CONS_TARGET == "online" else ""}-{ENV_NAME}'
+    exp_name = f'FBWM-{VARIANT}{"-identity" if PHI_IDENTITY else ""}{"-frozenwm" if FREEZE_WM else ""}{"-onlinecons" if CONS_TARGET == "online" else ""}{"-vicreg" if ("vicreg_var_coef" in kwargs or "vicreg_cov_coef" in kwargs) else ""}-{ENV_NAME}'
 
     while True:   # two jobs started in the same second get the same name: append '_' (runs_index strips it)
         LOGS_FOLDER       = f'./logs/{date_time_str}_{exp_name}'
@@ -150,7 +150,7 @@ if __name__ == '__main__':
                      "fb_loss", "fb_diag", "fb_offdiag", "q_loss", "b_ortho_loss", "f_grad_norm", "b_grad_norm", "M1", "F_norm",
                      "pi_loss", "q_mean", "bhead_loss",
                      "latent_std", "feat_cov_l2", "feat_mean_norm", "b_std", "b_cov_l2", "b_mean_norm", "fcons_loss",
-                     "latent_rank"]   # latent_rank (2026-11-22): RankMe effective rank of phi(s_0) on the batch, as tdmpc_adapt.py
+                     "latent_rank", "vicreg_var", "vicreg_cov"]   # latent_rank (2026-11-22): RankMe effective rank of phi(s_0) on the batch, as tdmpc_adapt.py
     train_logger = CSVLogger(
         filepath=f"{LOGS_FOLDER}/training_log.csv",
         fieldnames=["step"] + TRAIN_METRICS + ["time"],
@@ -888,6 +888,8 @@ if __name__ == '__main__':
         fcons_coef:          float = 0.0     # M1 (2026-11-15): F-consistency, F(imagined h_t, a_t, z) vs EMA F(EMA phi(s_t), a_t, z); 0 = off
         fcons_model_grad:    bool  = False   # M2: the F-consistency gradient also flows into phi and the dynamics (M1: into F only)
         ortho_coef:          float = 0.0     # orthonormality loss on phi(s): off (B's own orthonormality loss is kept, b_ortho_coef)
+        vicreg_var_coef:     float = 0.0     # 2026-11-22 (user): VICReg variance hinge on phi(s_0), mean_j relu(1 - std_j), as tdmpc_adapt.py; 0 = off
+        vicreg_cov_coef:     float = 0.0     # 2026-11-22 (user): VICReg covariance on phi(s_0), sum of squared off-diagonals / latent_dim; 0 = off
         b_ortho_coef:        float = 1.0     # orthonormality loss on B(s'), inside the FB loss (FB's value)
         f_encoder_grad:      float = 0.1     # scale of the FB gradient that reaches phi through F's input
         b_encoder_grad:      float = 1.0     # gphi only. Scale of the FB gradient that reaches phi through B = g(phi)
@@ -1158,12 +1160,18 @@ if __name__ == '__main__':
                     fcons_loss = (rho_t[:H - 1, None] * fc).sum(0).mean()
                 else:
                     fcons_loss = jnp.zeros(())
+                # VICReg on phi(s_0) (vicreg_*_coef, default off), the same terms and scaling as tdmpc_adapt.py
+                _hc = h0 - h0.mean(axis=0)
+                _std = jnp.sqrt(_hc.var(axis=0) + 1e-4)
+                vic_var = jnp.mean(nn.relu(1.0 - _std))
+                _cov = (_hc.T @ _hc) / (_hc.shape[0] - 1)
+                vic_cov = (jnp.sum(_cov ** 2) - jnp.sum(jnp.diag(_cov) ** 2)) / c.latent_dim
                 model_loss = ((c.consistency_coef * consistency_loss + c.bcons_coef * bcons_loss + c.fcons_coef * fcons_loss) / H
-                              + c.ortho_coef * ortho_loss)
+                              + c.ortho_coef * ortho_loss + c.vicreg_var_coef * vic_var + c.vicreg_cov_coef * vic_cov)
                 std, cov_l2, mean_norm = feature_stats(h0)
                 _sv = jnp.linalg.svd(jax.lax.stop_gradient(h0 - h0.mean(axis=0)), compute_uv=False)
                 _p = _sv / _sv.sum()
-                aux = {'latent_rank': jnp.exp(-jnp.sum(_p * jnp.log(_p + 1e-12))),'hs_next': hs_next, 'consistency_loss': consistency_loss, 'bcons_loss': bcons_loss, 'ortho_loss': ortho_loss,
+                aux = {'latent_rank': jnp.exp(-jnp.sum(_p * jnp.log(_p + 1e-12))), 'vicreg_var': vic_var, 'vicreg_cov': vic_cov,'hs_next': hs_next, 'consistency_loss': consistency_loss, 'bcons_loss': bcons_loss, 'ortho_loss': ortho_loss,
                        'fcons_loss': fcons_loss,
                        'latent_std': std, 'feat_cov_l2': cov_l2, 'feat_mean_norm': mean_norm}
                 return model_loss, aux
@@ -1258,6 +1266,7 @@ if __name__ == '__main__':
                 'latent_std': m_aux['latent_std'], 'feat_cov_l2': m_aux['feat_cov_l2'], 'feat_mean_norm': m_aux['feat_mean_norm'],
                 'b_std': fb_aux['b_std'], 'b_cov_l2': fb_aux['b_cov_l2'], 'b_mean_norm': fb_aux['b_mean_norm'],
                 'fcons_loss': m_aux['fcons_loss'], 'latent_rank': m_aux['latent_rank'],
+                'vicreg_var': m_aux['vicreg_var'], 'vicreg_cov': m_aux['vicreg_cov'],
             }
             return ts, metrics
 
@@ -1354,7 +1363,7 @@ if __name__ == '__main__':
 
     tdmpc_config = TDMPCFBConfig(variant=VARIANT, bc_coef=BC_COEF, batch_size=BATCH_SIZE, horizon=HORIZON, phi_identity=PHI_IDENTITY, frozen_wm=FREEZE_WM,
                                  cons_target=CONS_TARGET)
-    for name in ('lr', 'discount', 'consistency_coef', 'bcons_coef', 'ortho_coef', 'b_ortho_coef', 'f_encoder_grad',
+    for name in ('lr', 'discount', 'consistency_coef', 'bcons_coef', 'ortho_coef', 'b_ortho_coef', 'f_encoder_grad', 'vicreg_var_coef', 'vicreg_cov_coef',
                  'b_encoder_grad', 'q_loss_coef', 'mix_ratio', 'stddev', 'tau'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
