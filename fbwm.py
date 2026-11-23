@@ -562,6 +562,17 @@ if __name__ == '__main__':
     Z_COV_STATES = 100_000
     Z_LABELS = int(kwargs['z_labels']) if 'z_labels' in kwargs else 10_000   # labelled states per inferred z (one fresh draw per episode)
     EVAL_CKPT = kwargs.get('eval_ckpt')   # eval only: load this checkpoint, run one eval (tag 'zlabels'), no training
+    # ogbench_eval=1 (2026-11-23, OGBench goal tasks only; default off = unchanged): TD-JEPA's protocol, as in fb_jax.py. z (and the
+    # lstsq w) from 0/1 labels on the NEXT state (OGBench reward + 1: within the OGBench radius, antmaze 0.5, cube 0.04 m) instead of
+    # +-1 labels within 2 m; success = the goal coordinates within the OGBench radius at any step (instead of 2 m for antmaze).
+    OGBENCH_EVAL = str(kwargs.get('ogbench_eval', '0')).lower() in ('1', 'true')
+    assert not OGBENCH_EVAL or ENV_NAME in OGBENCH_ENVS, 'ogbench_eval=1 is for OGBench envs'
+    OGB_GOAL_SLICE, OGB_GOAL_TOL = (slice(19, 22), 0.4) if ENV_NAME == 'cube_single' else (slice(0, 2), 0.5)
+
+    def ogbench_goal_hit(states, goal):
+        """1 where the goal coordinates are within the OGBench radius (= OGBench's reward + 1), else 0."""
+        return (jnp.linalg.norm(states[..., OGB_GOAL_SLICE] - jnp.asarray(goal, dtype=jnp.float32), axis=-1) <= OGB_GOAL_TOL
+                ).astype(jnp.float32)
     print(NUM_TRAJECTORIES, TRAJECTORY_LEN, NUM_TRAJECTORIES * TRAJECTORY_LEN)
     print('Zero-shot evaluation tasks:', [b[1] for b in benchmarks])
 
@@ -1517,8 +1528,12 @@ if __name__ == '__main__':
             for b in ids:
                 reward_fn, _, param = benchmarks[b]
                 for _ in range(num_evals):
-                    eval_obs, _, _, eval_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
-                    r_lab = reward_fn(eval_aux, param)
+                    eval_obs, _, eval_next_obs, eval_aux = replay_buffer.sample(next_eval_key(), Z_LABELS)
+                    if OGBENCH_EVAL and benchmarks[b][1].startswith('goal_'):
+                        eval_obs = eval_next_obs
+                        r_lab = ogbench_goal_hit(eval_next_obs, param)
+                    else:
+                        r_lab = reward_fn(eval_aux, param)
                     z, corr = agent.infer_z(encoder_params, b_params, eval_obs, r_lab)
                     _, w, corr_ls = agent.infer_zw(encoder_params, b_params, eval_obs, r_lab, Z_RIDGE, cov_obs)
                     zs.append(z); ws.append(w); cs.append(corr); corr_ls_log.setdefault(b, []).append(float(corr_ls))
@@ -1534,7 +1549,10 @@ if __name__ == '__main__':
 
                 # same metric as the FB script: sum over the trajectory of the task reward of the visited states
                 trajectory_rewards = np.asarray(reward_fn(jnp.asarray(aux_traj[sl], dtype=jnp.float32), param)).sum(axis=-1)
-                if (ENV_NAME == 'antmaze' or ENV_NAME in OGBENCH_ENVS) and 'goal' in label:
+                if OGBENCH_EVAL and label.startswith('goal_'):
+                    # OGBench success: goal coordinates within the OGBench radius at any step
+                    trajectory_rewards = np.asarray(ogbench_goal_hit(jnp.asarray(aux_traj[sl], dtype=jnp.float32), param)).max(axis=-1)
+                elif (ENV_NAME == 'antmaze' or ENV_NAME in OGBENCH_ENVS) and 'goal' in label:
                     # goal tasks: 1 if the goal was reached at least once, else 0
                     trajectory_rewards = np.where(trajectory_rewards != -EVAL_STEPS, 1.0, 0.0)
 
