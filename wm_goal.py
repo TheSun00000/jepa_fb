@@ -554,9 +554,21 @@ if DIAG_GEOM and ENV_NAME not in OGBENCH_ENVS:   # dm_control latent diagnostics
     _Ytr, _Yte = (_Otr - _mu) / _sd, (_Ote - _mu) / _sd
     _P = _ridge_fit_predict(_Htr, _Ytr, _Hte)
     _keep = _Yte.std(0) > 1e-3                                 # constant state dimensions have no R^2
+    _r2 = np.where(_keep, 1 - ((_P - _Yte) ** 2).sum(0) / np.maximum(((_Yte - _Yte.mean(0)) ** 2).sum(0), 1e-12), np.nan)
     geom = dict(src=SRC, ckpt=CKPT, n_train=len(_itr), n_test=len(_ite),
-                probe_r2=float(np.mean(1 - ((_P - _Yte) ** 2).sum(0)[_keep] / ((_Yte - _Yte.mean(0)) ** 2).sum(0)[_keep])),
+                probe_r2=float(np.nanmean(_r2)),
                 **_spectrum(_Hte))
+    # per-dimension probe (2026-11-23): R^2 of each state dimension, group means by the dm_control flat-observation layout
+    # (observation-spec order: cheetah position 8 | velocity 9; walker orientations 14 | height 1 | velocity 9; quadruped
+    # egocentric_state 44 | torso_velocity 3 | torso_upright 1 | imu 6 | force_torque 24)
+    _groups = {'cheetah': [('position', 8), ('velocity', 9)], 'walker': [('orientations', 14), ('height', 1), ('velocity', 9)],
+               'quadruped': [('egocentric', 44), ('torso_vel', 3), ('upright', 1), ('imu', 6), ('force_torque', 24)]}[ENV_NAME]
+    assert sum(n for _, n in _groups) == STATE_DIM
+    _i0 = 0
+    for gname, gn in _groups:
+        geom[f'probe_r2_{gname}'] = float(np.nanmean(_r2[_i0:_i0 + gn])); _i0 += gn
+    for j in range(STATE_DIM):
+        geom[f'r2_d{j}'] = float(_r2[j])
     _rc, _rs = [], []
     for fn, label, param in benchmarks:
         _rtr = np.asarray(fn(jnp.asarray(dataset_aux[_itr]), param), dtype=np.float64)
@@ -564,6 +576,11 @@ if DIAG_GEOM and ENV_NAME not in OGBENCH_ENVS:   # dm_control latent diagnostics
         geom[f'rew_corr_{label}'] = float(np.corrcoef(_ridge_fit_predict(_Htr, _rtr, _Hte), _rte)[0, 1])
         geom[f'rew_corr_state_{label}'] = float(np.corrcoef(_ridge_fit_predict(_Ytr, _rtr, _Yte), _rte)[0, 1])
         _rc.append(geom[f'rew_corr_{label}']); _rs.append(geom[f'rew_corr_state_{label}'])
+        # task-weighted probe: state dimensions weighted by |weight| in the linear reward fit on the standardised state
+        _Xs = np.concatenate([_Ytr, np.ones((len(_Ytr), 1))], 1)
+        _ws = np.abs(np.linalg.solve(_Xs.T @ _Xs + 1e-3 * np.eye(_Xs.shape[1]), _Xs.T @ _rtr)[:-1])
+        _ws = np.where(np.isnan(_r2), 0.0, _ws)
+        geom[f'probe_r2_rw_{label}'] = float(np.nansum(_ws * _r2) / _ws.sum())
     geom['rew_corr_mean'], geom['rew_corr_state_mean'] = float(np.mean(_rc)), float(np.mean(_rs))
     CSVLogger(f'{LOGS_FOLDER}/diag_geom.csv', list(geom)).log(geom)
     print('diag_geom:', geom)
