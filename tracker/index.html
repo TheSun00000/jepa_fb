@@ -160,6 +160,10 @@ svg text { fill: var(--dim); font-family: var(--font); font-size: 10px; }
 .mt td.cell .ci { color: var(--dim); font-size: var(--t-xs); margin-left: 4px; }
 .mt td.cell .n { display: block; color: var(--faint); font-size: var(--t-xs); }
 .mt td.cell.flag .n { color: var(--policy); }
+.mt td.cell .warn { position: relative; display: inline-block; width: 14px; height: 14px; line-height: 14px; margin-left: 5px; border-radius: 50%;
+  background: var(--policy); color: var(--bg, #fff); font-weight: 700; font-size: 10px; text-align: center; cursor: help; vertical-align: 1px; }
+#tip { position: fixed; z-index: 50; max-width: 300px; padding: 6px 8px; font-size: var(--t-xs); line-height: 1.4; color: var(--ink);
+  background: var(--pane-2); border: 1px solid var(--line-2); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.3); pointer-events: none; display: none; }
 .mt td.miss { color: var(--faint); text-align: right; }
 .mt tr.grp td { background: var(--bg); color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; font-size: var(--t-xs); padding-top: 10px; }
 .mt tr.ours td { color: var(--mppi); }
@@ -319,6 +323,21 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     (kids || []).forEach(function (c) { if (c != null) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
     return e;
   }
+  /* hover note of a table cell ("!" icon): one fixed tooltip on the body, so the scrolling table box does not clip it */
+  var tipEl = null;
+  function showTip(e) {
+    var t = e.target.closest && e.target.closest("[data-tip]"); if (!t) return;
+    if (!tipEl) { tipEl = el("div", { id: "tip", role: "tooltip" }); document.body.appendChild(tipEl); }
+    tipEl.textContent = t.getAttribute("data-tip"); tipEl.style.display = "block";
+    var r = t.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+    var x = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)), y = r.bottom + 6;
+    if (y + h > window.innerHeight - 8) y = r.top - h - 6;
+    tipEl.style.left = x + "px"; tipEl.style.top = y + "px";
+  }
+  function hideTip(e) { if (tipEl && e.target.closest && e.target.closest("[data-tip]")) tipEl.style.display = "none"; }
+  document.addEventListener("mouseover", showTip); document.addEventListener("focusin", showTip);
+  document.addEventListener("mouseout", hideTip); document.addEventListener("focusout", hideTip);
+  window.addEventListener("scroll", function () { if (tipEl) tipEl.style.display = "none"; }, true);
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
   function fmt(v) { return v == null ? "–" : Math.round(v).toString(); }
   var SVGNS = "http://www.w3.org/2000/svg";
@@ -675,8 +694,9 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
         envs.forEach(function (e) {
           var c = (r.cells || {})[e];
           if (!c) { tds.push(el("td", { cls: "miss", text: "missing" })); return; }
-          var td = el("td", { cls: "cell" + (c.note ? " flag" : ""), title: c.note || "" }, [el("span", { cls: "v", text: fmt(c.m) }), c.ci != null ? el("span", { cls: "ci", text: "±" + fmt(c.ci) }) : null,
-            el("span", { cls: "n", text: (c.n === 1 ? "1 seed" : c.n + " seeds") + (c.note ? " · " + c.note : "") })]);
+          var td = el("td", { cls: "cell" + (c.note ? " flag" : "") }, [el("span", { cls: "v", text: fmt(c.m) }), c.ci != null ? el("span", { cls: "ci", text: "±" + fmt(c.ci) }) : null,
+            el("span", { cls: "n" }, [document.createTextNode(c.n === 1 ? "1 seed" : c.n + " seeds"),
+              c.note ? el("span", { cls: "warn", tabindex: "0", "aria-label": "note: " + c.note, "data-tip": c.note, text: "!" }) : null])]);
           tds.push(td);
         });
         tb.appendChild(el("tr", { cls: r.ours ? "ours" : "" }, tds));

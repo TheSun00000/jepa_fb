@@ -92,8 +92,8 @@ def collect():
             continue
         for x in rows_of(os.path.join(run, 'goal_eval.csv')):
             n = int(x['n'])
-            out.append(dict(env=kw['env_name'], method={'lewm': 'LeWM (state) CEM', 'dinowm': 'DINO-WM (state) CEM', 'lewm-mppi': f"LeWM (state) distance MPPI H={5 * int(kw.get('plan_horizon', 5))} norm",
-                                                'dinowm-mppi': f"DINO-WM (state) distance MPPI H={5 * int(kw.get('plan_horizon', 5))} norm"}[x['model']],
+            out.append(dict(env=kw['env_name'], method={'lewm': 'LeWM (state) CEM', 'dinowm': 'raw-state WM CEM', 'lewm-mppi': f"LeWM (state) distance MPPI H={5 * int(kw.get('plan_horizon', 5))} norm",
+                                                'dinowm-mppi': f"raw-state WM distance MPPI H={5 * int(kw.get('plan_horizon', 5))} norm"}[x['model']],
                             k=int(x['goal_k']), succ=round(float(x['success']) * n), n=n, gmin=float(x['gdist_min']),
                             gstart=float(x['gdist_start']), run=os.path.basename(run), ckpt=os.path.basename(run)))
     return out
