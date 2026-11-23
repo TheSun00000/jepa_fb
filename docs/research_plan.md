@@ -163,6 +163,12 @@ Details and run folders: docs/journal.md (2026-11-22 night, 2026-11-23).
 - Mechanism (P2, P4): whitening FBWM's latent with a strong VICReg removes its advantage on cheetah (403 -> 345 = frozen JEPA) and on antmaze-medium goal reaching (32 -> 21% at K=10, 10 -> 3% at K=50; Spearman 0.92 -> 0.70, JEPA 0.66), while its information content does not move. FB's gain comes with the geometry it imposes, not with what the latent holds.
 - Collapse (E2): with an online consistency target JEPA without a regulariser collapses (std 0.01) and FBWM does not; with an EMA target neither collapses. Effective rank does not detect the collapse (scale-invariant): report std with rank.
 - Open (needs the user's yes): joint training with FB gradients cut from the encoder (separates FB shaping from frozen-vs-joint).
+- **Next steps proposed (2026-11-23, not started; ask the user):**
+  1. Adapted-WM baseline (C4) rerun on the matched PhiMap 64 JEPA WMs (`tdmpc_adapt.py mode=adapt wm_ckpt=` from `python tools/find_run.py JEPAWM-phimap <env> <seed> wm_final.pickle enc_dim=64 !var_coef !target !reg`), N=10k then the label sweep: removes the last fairness gap of question (ii).
+  2. Model-free best-of-K by F (eval only, new code): K actions around the policy, argmax F(phi(s),a,z)^T z, same budget as MPPI, the 9 paper checkpoints: question (iii) has no evidence yet.
+  3. Analysis only: rho_dist_k (latent distance vs temporal distance) in the maze diag_geom rows, FBWM vs whitened vs JEPA: does FB's geometry track reachability, and does whitening break it?
+  4. Writing: rescope Table 1 text and takeaway; goal-reaching section (matched table); mechanism figure (whitening drop, cheetah + maze); collapse panel (std with rank).
+  Optional: P3 (needs yes), quadruped label sweep, paired bootstrap CIs for Table 1, drop antmaze from the zero-shot table.
 
 ## 9. Order of work
 
