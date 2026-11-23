@@ -236,3 +236,9 @@ Dated session notes, newest last.
   Runs: training `logs/2026-11-23_*_FBWM-gphi-vicreg-antmaze_medium*` (vicreg_cov_coef 100 / 1000 in info.txt), evals `logs/2026-11-23_*_WMGOAL-*-p4_vicreg{,1000}_am_s*_{geom,gk10_h5_norm,gk50_h5_norm}-antmaze_medium`.
 - Not proposed further: P3 (joint training with FB gradients cut from the encoder) needs the user's yes (gradient-routing change). No other experiment that would change the paper's claims came up; stopping here as agreed.
 - End of session (2026-11-23): cluster idle, nothing cancelled. Next-step list (adapted-WM baseline on the matched WMs, best-of-K by F, rho_dist_k analysis, writing) is in research_plan.md under "FB shapes the latent better". The tracker loop is not running; the systemd queue timer is.
+
+## 2026-11-23 (day): pure-V goal planning queued (user)
+- User's idea: with z = B(goal), plan on FB's value alone, cost = V(h_T) = min F(h_H, pi(h_H, z), z)^T z (the reward is 0 along the way), instead of the latent distance. Earlier FB-goal MPPI rows (goal_reaching.md, C) also summed the per-step lstsq reward g(h)^T w.
+- No code change: `fbwm.py mppi_terminal_only=1` (planner otherwise the reference rows': init_policy + root_check, no mppi_norm). Note the terminal is scaled by 0.95^5, which changes the effective MPPI temperature slightly vs the reference.
+- Jobs 602470-602473 (V100, `fbj_pureV_{am_s1,am_s2,am_s3,al_s1}`): fbgoal_k = 10 / 50 / 200 + fbgoal_official on the antmaze-medium s1-3 and antmaze-large s1 FBWM checkpoints. Compare per checkpoint with "FB-goal MPPI init-policy + root" and the FB-goal actor (medium s1: 44 / 30 / 12, official 0; actor 42 / 30 / 19, official 5).
+- Framing (agreed): the value cost is not evidence about the latent; it stays separate from the distance-MPPI comparison and needs GCIQL / HIQL references in the paper.
