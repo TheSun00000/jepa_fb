@@ -156,6 +156,14 @@ or under LeWM's 25-step CEM. FB's own goal reaching (z = B(goal)) is strong on t
 goal-conditioned value method, e.g. GCIQL / HIQL on the same pairs). Next: FBWM seed 2, seed 3 on antmaze-large, decide whether the
 section goes into the paper and with which scope.
 
+### "FB shapes the latent better": matched tests (2026-11-22 night to 11-23)  `[weak on DMC, supported on mazes + cheetah]`
+Details and run folders: docs/journal.md (2026-11-22 night, 2026-11-23).
+- Matched frozen-WM row on DMC (E1, JEPA with FBWM's encoder / optimiser / consistency, VICReg): FB on it 586 / 347 / 590 vs FBWM 621 / 403 / 587. FBWM ahead on cheetah only (every seed); tie on walker and quadruped. Table 1's old row was within noise too; its text must be rescoped.
+- Latent content (E3, P1): FBWM's latent holds LESS linear state information than the matched JEPA latent (probe 0.92 / 0.72 / 0.58 vs 0.97 / 0.96 / 0.72) and is anisotropic (rank 37 / 26 / 40 vs ~49); it drops the cheetah feet.
+- Mechanism (P2, P4): whitening FBWM's latent with a strong VICReg removes its advantage on cheetah (403 -> 345 = frozen JEPA) and on antmaze-medium goal reaching (32 -> 21% at K=10, 10 -> 3% at K=50; Spearman 0.92 -> 0.70, JEPA 0.66), while its information content does not move. FB's gain comes with the geometry it imposes, not with what the latent holds.
+- Collapse (E2): with an online consistency target JEPA without a regulariser collapses (std 0.01) and FBWM does not; with an EMA target neither collapses. Effective rank does not detect the collapse (scale-invariant): report std with rank.
+- Open (needs the user's yes): joint training with FB gradients cut from the encoder (separates FB shaping from frozen-vs-joint).
+
 ## 9. Order of work
 
 1. §3 protocol and script merge.
@@ -184,3 +192,4 @@ section goes into the paper and with which scope.
 - 2026-11-15 (night): paper configuration fixed (gphi z50, consistency 2, lstsq, dataset Cov, root check); main table and label-budget figure in the tracker; handoff section for the paper draft.
 - 2026-11-15 (23:20): paper config revised to consistency 5 (consistency 2 hurts walker and cheetah); main table and figure final with 3 seeds.
 - 2026-11-22: goal-reaching study (section 8): goal_k protocol, LeWM / DINO-WM state baselines, same-planner comparisons; latent claim holds on the mazes only.
+- 2026-11-23: matched latent tests (E1-E3, P1, P2, P4): the latent claim holds on the mazes and cheetah, not on walker / quadruped; whitening removes FBWM's advantage on both (mechanism = geometry, not information); FB alone prevents collapse with an online target.
