@@ -225,3 +225,13 @@ Dated session notes, newest last.
   Reading: forcing the FB latent to be isotropic removes FBWM's cheetah advantage and puts it exactly at the frozen-JEPA level, while its information content stays FBWM-like (probe 0.77, not JEPA's 0.96). On cheetah, what helps is the anisotropic shape FB gives the latent, not how much it holds. n=3, cheetah only (walker is a tie, so no test there).
   Also var 100 / cov 10 (s1): rank 39, MPPI 334. var 10 / cov 1 (s1): rank 26 (unchanged), timed out at 294k on a slow node, not rerun.
   Runs: `logs/2026-11-23_*_FBWM-gphi-vicreg-cheetah*` (vicreg_var_coef / vicreg_cov_coef in info.txt), evals with eval_ckpt, `*WMGOAL-*-geom2_fbwm_vicreg100c100_s*-cheetah`.
+- **P4 (reviewer-approved; whitened FBWM on antmaze_medium goal reaching, FBWM antmaze config phi 64 + VICReg on phi):** var 100 / cov 100 did not whiten (training rank 39, std 0.65); var 1000 / cov 1000 did (rank 49.7, std 1.00 from 13k updates on), seeds 1-3. Same 50 pairs per K, distance MPPI H=5 mppi_norm.
+  | latent (antmaze_medium, 3 seeds pooled) | K=10 | K=50 | Spearman latent dist vs displacement | xy probe R^2 |
+  |---|---|---|---|---|
+  | FBWM phi 64 (reference, goal_reaching.md) | 48/150 (32%, 25-40) | 15/150 (10%, 6-16) | 0.92 0.92 0.92 | 0.91-0.96 |
+  | FBWM phi 64 + VICReg 1000/1000 (whitened) | 31/150 (21%, 15-28) [11 9 11] | 5/150 (3%, 1-8) [3 1 1] | 0.72 0.71 0.68 | 0.98 |
+  | JEPA PhiMap 64 VICReg (matched) | 23/150 (15%, 10-22) | 5/150 (3%, 1-8) | 0.64 0.67 0.66 | |
+  var 100 / cov 100 (s1, rank 41): K=10 10/50, K=50 2/50, Spearman 0.81.
+  Reading: whitening the FB latent brings its distance geometry down to the JEPA level (Spearman 0.70 vs 0.92; JEPA 0.66) and success down with it: K=50 equals JEPA (3%), K=10 sits between JEPA and FBWM (21% vs 15% and 32%; CIs touch both). The xy information stays (probe 0.98): the loss is in the metric, not in the content. Success follows Spearman across the four latents (0.66 / 0.70 / 0.81 / 0.92 -> 15 / 21 / 20 / 32% at K=10). With P2 (cheetah), the same picture on both families: FB's advantage comes with the anisotropic geometry it imposes, and goes away when the latent is whitened.
+  Runs: training `logs/2026-11-23_*_FBWM-gphi-vicreg-antmaze_medium*` (vicreg_cov_coef 100 / 1000 in info.txt), evals `logs/2026-11-23_*_WMGOAL-*-p4_vicreg{,1000}_am_s*_{geom,gk10_h5_norm,gk50_h5_norm}-antmaze_medium`.
+- Not proposed further: P3 (joint training with FB gradients cut from the encoder) needs the user's yes (gradient-routing change). No other experiment that would change the paper's claims came up; stopping here as agreed.
