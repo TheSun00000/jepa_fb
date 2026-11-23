@@ -268,3 +268,20 @@ Eval runs: `hpc/logs/2026-11-22_*_WMGOAL-*-fair_al_*`, `*-fair_am_fbwm256oc_s*`,
 Eval runs: `hpc/logs/2026-11-2*_WMGOAL-*-fair_cube_*`. Checkpoints: FBWM `models/2026-11-22_17-09-42_FBWM-gphi-cube_single` (s1),
 `..._17-29-06_...` (s2), `..._17-39-16_FBWM-gphi-cube_single` (s3); JEPA VICReg `models/2026-11-22_17-09-42` / `17-30-27` / `17-39-16_JEPAWM-phimap-cube_single`;
 LeWM loss `models/2026-11-22_17-21-42` / `17-35-55` / `17-39-27_JEPAWM-phimap-sigreg-online-cube_single`.
+
+## Pure-V goal MPPI (2026-11-23): cost = V(h_T) only
+
+`mppi_terminal_only=1` (no per-step reward), otherwise as "FB-goal MPPI init-policy + root". Successes / 50, K = 10 / 50 / 200 / official.
+
+| ckpt | FB-goal actor | MPPI, per-step reward + terminal F | MPPI, pure V(h_T) |
+|---|---|---|---|
+| medium s1 | 42 / 30 / 19 / 5 | 44 / 30 / 12 / 0 | 42 / 31 / 12 / 0 |
+| medium s2 | 41 / 24 / 18 / 1 | 41 / 26 / 15 / - | 42 / 26 / 14 / 1 |
+| medium s3 | 41 / 25 / 14 / 2 | 43 / 29 / 12 / - | 45 / 34 / 15 / 0 |
+| medium, / 150 | 124 / 79 / 51 / 8 | 128 / 85 / 39 / - | 129 / 91 / 41 / 1 |
+| large s1 | 40 / 19 / 13 / 0 | 39 / 25 / 3 / - | 39 / 21 / 6 / 0 |
+
+Pure V ties the reference MPPI (+1 / +6 / +2 of 150; binomial SE about 6). It does not fix K=200 (actor 51 vs 41) or the official
+tasks (1 / 150). With discount 0.95, F^T z only sees about 20 steps ahead, so V carries little signal toward goals hundreds of steps away.
+An earlier s1 test without init_policy / root check (2026-11-21_22-04-53, 22-10-03): pure V 14 / 50 at K=25 and 14 at K=100, vs 27 and 15
+with the per-step reward. Runs: `logs/2026-11-23_09-0*_FBWM-gphi-antmaze_{medium,large}` (jobs 602470-602473).
