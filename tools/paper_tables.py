@@ -17,7 +17,7 @@ from collections import defaultdict
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 LOGS = os.path.join(ROOT, 'hpc', 'logs')
 OUT = os.path.join(ROOT, 'hpc', 'status')
-ENVS = ['walker', 'cheetah', 'quadruped', 'antmaze_g1']   # antmaze_m9 dropped 2026-11-22: antmaze reports goal success only (user)   # antmaze left out until 2026-11-21, then added (user)
+ENVS = ['walker', 'cheetah', 'quadruped']   # antmaze_m9 dropped 2026-11-22: antmaze reports goal success only (user)   # antmaze left out until 2026-11-21, then added (user)   # antmaze column removed from the main table 2026-11-23 (user); antmaze lives in the goal-reaching tables
 # OGBench antmaze_medium, navigate dataset, bc_coef 0.3 (2026-11-21): two columns. antmaze_m9 = mean over the 9 tasks (5 goals as success
 # rate, 4 velocity returns: dominated by the velocity tasks), zero-shot methods only. antmaze_g1 = goal_1 success rate in % (all methods;
 # TD-MPC and the adapted world model are trained on this one task).

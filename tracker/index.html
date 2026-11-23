@@ -210,6 +210,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     <a href="#jobs" data-tab="jobs">jobs</a>
     <a href="#log" data-tab="log">log</a>
     <a href="#todo" data-tab="todo">todo</a>
+    <a href="#archive" data-tab="archive">archive</a>
   </nav>
 
   <div id="banner" class="banner" hidden></div>
@@ -294,6 +295,12 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
     </div>
   </section>
 
+  <!-- ARCHIVE: tables kept for reference (findings docs with archive=true) -->
+  <section id="archive" class="sec" data-view="archive" hidden>
+    <p class="lede">Tables that are no longer in the paper plan, kept for reference.</p>
+    <div id="archive-findings"></div>
+  </section>
+
   <!-- TODO -->
   <section id="todo" class="sec" data-view="todo" hidden>
     <div class="pane">
@@ -347,7 +354,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
             loaded: {}, canWrite: false, openRun: null, db: null };
 
   /* ---------- routing ---------- */
-  var TABS = ["overview", "runs", "compare", "jobs", "log", "todo"];
+  var TABS = ["overview", "runs", "compare", "jobs", "log", "todo", "archive"];
   function route() {
     var t = (location.hash || "").replace("#", "");
     if (TABS.indexOf(t) < 0) t = "overview";
@@ -877,8 +884,12 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
 
   /* ---------- findings: pre-formatted result tables (collection findings) ---------- */
   function renderFindings() {
-    var box = $("findings"); clear(box);
-    var docs = (S.findings || []).filter(function (d) { return !d.hidden; });
+    renderFindingsInto("findings", false);
+    renderFindingsInto("archive-findings", true);
+  }
+  function renderFindingsInto(boxId, archived) {
+    var box = $(boxId); clear(box);
+    var docs = (S.findings || []).filter(function (d) { return !d.hidden && !!d.archive === archived; });
     if (!docs.length) return;
     var wrap = el("div", { cls: "fd" });
     docs.forEach(function (d) {
@@ -891,7 +902,7 @@ details.vals summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm
         var tds = [el("td", { cls: r.note ? "wrap" : "", text: r.label, title: r.note || "" })];
         cols.forEach(function (c) {
           var v = (r.cells || {})[c.key], mark = (r.marks || {})[c.key] || "";
-          tds.push(el("td", { cls: v == null || v === "" ? "miss" : "txt " + mark, text: v == null || v === "" ? "·" : String(v) }));
+          tds.push(el("td", { cls: v == null || v === "" ? "miss" : "txt " + mark, text: v == null || v === "" ? "missing" : String(v) }));
         });
         tb.appendChild(el("tr", { cls: r.ours ? "ours" : "" }, tds));
       });
