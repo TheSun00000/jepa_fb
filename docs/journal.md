@@ -276,3 +276,9 @@ Dated session notes, newest last.
 ## 2026-11-23 (afternoon, later): FBWM with discount 0.99 on antmaze (user)
 - `fbwm.py ogbench_eval=1` (default off): TD-JEPA's z inference (0/1 labels at 0.5 m on the next state, also for the lstsq w) and 0.5 m success, as in fb_jax.py.
 - Queued: FBWM antmaze_medium paper config + discount 0.99, s1, eval_mode=policy (job 617406, `fbj_fbwm_am_disc99_s1`); after it, label-z actor + MPPI (root check) and z = B(goal) official actor / MPPI (`..._ev`); and the discount-0.95 paper checkpoint (`2026-11-21_13-23-49_FBWM-gphi-antmaze_medium`) with the OGBench eval, actor + MPPI (job 617407). Plain FB reference: 24% (0.95) -> 68% (0.99).
+- **Results (antmaze_medium s1, OGBench success at 0.5 m, 50 episodes):**
+  FBWM discount 0.95 (paper ckpt, `ogbench_eval=1`): actor 34% (goals 50 / 80 / 0 / 40 / 0), MPPI 0%.
+  FBWM discount 0.99: actor 88% at the training final (goals 100 / 90 / 100 / 90 / 60; periodic 56 / 64 / 76 / 88 / 72 at 100k-500k), 84% in the separate eval (100 / 100 / 70 / 100 / 50); MPPI (label z, root check) 30%; z = B(goal) official: actor 70%, MPPI (init policy + root) 20%.
+  Plain FB (fb_jax.py) 0.95 -> 0.99: 24% (3 seeds) -> 68%. TD-JEPA FB port: 86-88%.
+  Reading: discount 0.99 helps FBWM as much as plain FB (34 -> 84-88), and FBWM's actor ends at the port's level and above plain FB at 0.99 (one seed each). MPPI stays well below the actor (0 -> 30%): the planner is the weak part on long-horizon goals.
+  Runs: `logs/2026-11-23_13-48-40_FBWM-gphi-antmaze_medium` (train), `14-43-14` (label-z eval), `14-50-55` / `14-51-58` (z = B(goal) actor / MPPI), `13-49-08` (0.95 ckpt eval).
