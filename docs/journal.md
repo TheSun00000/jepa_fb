@@ -251,3 +251,9 @@ Dated session notes, newest last.
 - Found on the way (our evals): fb_jax.py infers z from +-1 rewards (z dominated by -mean B: likely the 0-4% official success with 10k labels); fb_jax.py / fbwm.py antmaze periodic success counts 2 m, OGBench uses 0.5 m. TD-JEPA: reward 0 / -1 at the OGBench radius, +1 shift, success = info['success'].
 - Smoke test (job 603943) ok: 1.45 s per 1k updates on H100 (about 25 min for 1M).
 - Sweep queued (user: one seed): antmaze_medium (bc 0.3) and cube_single (bc 3), ortho {100, 1000} x lr_b {1e-4, 1e-5}, deep encoder, seed 1, jobs 604495-604508 (`fbj_tdjfb_*_s1`).
+- **Sweep results (seed 1, success over the 5 official tasks; final = 10 episodes per task / mean of the 800k, 900k and final evals):**
+  antmaze_medium (bc 0.3): ortho 100 lr_b 1e-4 88% / 80; ortho 1000 lr_b 1e-4 86% / 83; ortho 100 lr_b 1e-5 66% / 65; ortho 1000 lr_b 1e-5 62% / 62. TD-JEPA FB: 73.0%.
+  cube_single (bc 3): ortho 1000 lr_b 1e-4 54% / 47; ortho 1000 lr_b 1e-5 46% / 38; ortho 100 lr_b 1e-5 40% / 37; ortho 100 lr_b 1e-4 32% / 29. TD-JEPA FB: 49.6%.
+  The port reproduces their FB (one seed, 50 episodes: binomial SE about 7 points). Best configs: antmaze lr_b 1e-4 (either ortho), cube ortho 1000 lr_b 1e-4. Our earlier FB on the same envs: antmaze ~23% official (2 m radius, +-1 labels) and 0-4% with 10k labels; cube 0-2 / 50.
+  On cube, corr(B^T z, r) falls during training (0.40 -> 0.14-0.20) while success rises; on antmaze it stays at 0.4-0.6.
+  Runs: `logs/2026-11-23_09-53-07_FBTDJ-deep-antmaze_medium{,_,__}`, `09-59-37_FBTDJ-deep-antmaze_medium`, `10-00-07_FBTDJ-deep-cube_single{,_}`, `10-00-17_FBTDJ-deep-cube_single`, `10-03-14_FBTDJ-deep-cube_single` (ortho_coef / lr_b in info.txt); jobs 604495-604508, 27.5 min each.
