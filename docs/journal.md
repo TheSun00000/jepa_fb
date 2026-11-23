@@ -261,3 +261,12 @@ Dated session notes, newest last.
 ## 2026-11-23 (afternoon): which TD-JEPA component gives the antmaze gain (add-one ablation, user)
 - `fb_tdjepa.py` now has switches that turn each component back into fb_jax.py's FB: `actor=td3|flow`, `net=ours|theirs` (B 2x526 / F shared embeddings 1024 + two heads / z 200 / min / Q loss 0.01 / torch init / goals from obs, vs theirs), `opt=ours|theirs` (batch 1024, tau 0.01, 500k vs 256, 0.005, 1M), `left_encoder=none` (with net=ours: our 2x64 trunk inside F) | deep, `discount`, `ortho_coef` (fb_jax's weight 1 = 2 here: its loss is 2x theirs). The final eval also runs fb_jax's old z inference (+-1 labels within 2 m), scored with OGBench success (columns old_*).
 - Runs (antmaze_medium, seed 1, jobs 609563-609569, `fbj_abl_am_*_s1`): base = ours (td3, net ours, opt ours, no encoder, discount 0.95, ortho 2), then base + one of: discount 0.99, ortho 100, deep encoder, flow-BC actor, their networks, their optimisation. Top = the port (88%, `2026-11-23_09-53-07_FBTDJ-deep-antmaze_medium`).
+- **Results (antmaze_medium s1, OGBench success over the 5 tasks; final = 50 episodes / mean of the last 3 evals; old = fb_jax.py's +-1 z inference at the final eval):**
+  base (ours) 24% / 19 (old 0%); + discount 0.99 74% / 47 (old 0%); + their networks 38% / 31 (old 16%); + ortho 100 20% / 16;
+  + their optimisation 24% / 17; + deep encoder 14% / 11; + flow-BC actor 8% / 9. Full port 88% / 80.
+  Reading: two changes carry the gain. (1) The z inference: the same base checkpoint goes 0% -> 24% (+-1 labels at 2 m -> 0/1 labels at
+  0.5 m); with +-1 labels every run but one is at 0-4%. (2) discount 0.99: +50 points alone (24 -> 74; noisy: 32-36% at 300-400k,
+  74% final). Their networks help a little (+14); ortho 100, their optimiser, the deep encoder and the flow-BC actor do not help on
+  their own (-16 to 0, within noise of one seed). The deep encoder and flow-BC may matter only with discount 0.99 (port 88% vs 74%).
+  Runs: `logs/2026-11-23_11-23-13_FBTDJ-none-antmaze_medium{,_}` (disc99, base), `11-25-08` (ortho100), `11-25-15_FBTDJ-deep` (deep),
+  `11-25-34` (flow), `11-25-42` (net theirs), `11-26-24` (opt theirs); job names in info.txt.
