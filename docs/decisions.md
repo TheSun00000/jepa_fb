@@ -176,3 +176,7 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 
 ## 2026-11-22 (night): FBWM + VICReg on the encoder (user request, method change approved by the user)
 - `fbwm.py vicreg_var_coef= vicreg_cov_coef=` (default 0 = unchanged): VICReg variance hinge and covariance on phi(s_0), the same terms and scaling as `tdmpc_adapt.py`, added to the model loss. Run: walker s1, paper config + var 1 / cov 0.04 (the matched JEPA WM's values), N=10k MPPI eval and diag_geom chained (`fbj_vicreg_fbwm_walker_s1`). Question: does whitening the FB-shaped latent (E3: rank 37 vs 49, probe 0.92 vs 0.97) change planning, i.e. is FBWM's anisotropy a cost or part of what makes it work?
+
+## 2026-11-23: reimplement TD-JEPA's FB for OGBench (user)
+- Focus moves to plain FB on antmaze / cube. New script `fb_tdjepa.py` (fb_jax.py untouched), a faithful port of TD-JEPA's FBFlowBCAgent and its OGBench evaluation, so our numbers can be compared with their 73.0% / 49.6%.
+- Their sweep, one seed per config first (user).
