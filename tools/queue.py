@@ -194,11 +194,11 @@ def sync(a=None):
 
 
 def submit(a):
+    sync()   # also when nothing is queued, so that done / failed states stay current
     q = load()
     if not [e for e in q['entries'] if e['state'] == 'queued']:
         print('nothing queued')
         return
-    sync()
     q = load()
     queued = [e for e in q['entries'] if e['state'] == 'queued']
     counts = cluster_counts()
