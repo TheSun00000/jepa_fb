@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --output=.slurm_logs/%x_%j.out
 #SBATCH --error=.slurm_logs/%x_%j.err
-#SBATCH --time=1:30:00
+#SBATCH --time=0:45:00
 #SBATCH --exclude=jean-zay-iam26
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
