@@ -282,3 +282,8 @@ Dated session notes, newest last.
   Plain FB (fb_jax.py) 0.95 -> 0.99: 24% (3 seeds) -> 68%. TD-JEPA FB port: 86-88%.
   Reading: discount 0.99 helps FBWM as much as plain FB (34 -> 84-88), and FBWM's actor ends at the port's level and above plain FB at 0.99 (one seed each). MPPI stays well below the actor (0 -> 30%): the planner is the weak part on long-horizon goals.
   Runs: `logs/2026-11-23_13-48-40_FBWM-gphi-antmaze_medium` (train), `14-43-14` (label-z eval), `14-50-55` / `14-51-58` (z = B(goal) actor / MPPI), `13-49-08` (0.95 ckpt eval).
+
+## 2026-11-23 (evening): seeds 2-3 at discount 0.99, FBWM antmaze numbers for the goal-reaching tables (user)
+- Queued: FBWM and fb_jax.py at discount 0.99, antmaze_medium seeds 2-3 (jobs 623083-623087, `fbj_fbwm_am_disc99_s{2,3}`, `fbj_fbjax_am_disc99_s{2,3}`); chained FBWM evals (label-z actor + MPPI, z = B(goal) official actor + MPPI: `fbj_fbwm_am_disc99_s{2,3}_ev`).
+- For the tracker tables built on FBWM latents: distance-MPPI goal_k 10 / 50 / 200 and diag_geom on the discount-0.99 FBWM checkpoints, seeds 1-3 (`fbj_d99_wmgoal_am_s{1,2,3}`, same commands and pair seed as the existing rows: horizon 5, mppi_norm, seed=1). New rows are added next to the discount-0.95 rows (antmaze-medium only: large and cube were not retrained at 0.99).
+- Not rerun: "Latent diagnostics on DMC (E3)" (walker / cheetah / quadruped checkpoints are discount 0.95; 0.99 hurt on DMC), and the antmaze-large / cube-single rows.
