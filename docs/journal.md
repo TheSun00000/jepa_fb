@@ -294,3 +294,10 @@ Dated session notes, newest last.
 - Readings: FBWM beats both JEPA latents on the mazes; on cube JEPA VICReg beats FBWM (latent claim fails there). At PhiMap 64 the 0.95 / 0.99 FBWM tie on large. Plain FB at 0.99: large 21% vs FBWM actor 41%; cube return 124 vs 60 (FB ahead).
 - DMC: matched JEPA adaptation (N=10k, full dataset) walker 622, cheetah 441, quadruped 638 vs FBWM MPPI 622 / 441 / 587. The old MLP-256 row was not matched; FBWM's advantage on DMC is "no per-task training", not return. Labels-only matched adaptation not run.
 - Tracker: per-env goal tables rebuilt with PhiMap-64 rows, archive tab holds the old four-latents and matched-encoder tables, DMC main-table adaptation rows replaced. `tools/paper_tables.py` was NOT changed for the matched adaptation rows: rerunning it would overwrite them with the old MLP-256 numbers.
+- N sweep, matched PhiMap-64 JEPA adaptation (full dataset, 3 seeds) vs FBWM MPPI, mean return (computed 2026-11-24 from `tools/paper_tables.py` S + the `*_TDMPC-adapt-*` runs with a `JEPAWM-phimap` wm_ckpt):
+  - walker N=100/300/1000/3000/10000: JEPA 463 / 450 / 534 / 580 / 622, FBWM 379 / 478 / 557 / 598 / 622 (old MLP-256 JEPA 514 / 554 / 630 / 678 / 670).
+  - cheetah: JEPA 146 / 234 / 296 / 387 / 441, FBWM 319 / 377 / 444 / 437 / 441 (old 176 / 264 / 356 / 348 / 343).
+  - quadruped: only N=10k so far (JEPA 638, FBWM 587); N=100..3000 queued (`fbj_a64_adaptN_qu_*`).
+  - N=10k per seed: walker FBWM 577 / 672 / 615, JEPA 639 / 615 / 612; cheetah FBWM 413 / 470 / 441, JEPA 441 / 496 / 385. The equal means (622, 441) are a coincidence.
+  - Reading: C4 holds on cheetah (FBWM far ahead at low N, tie at 10k); on walker JEPA leads at N=100 and FBWM is ahead by 20-30 at N=300-3000 (within seed spread), tie at 10k.
+- Capacity check (queued 2026-11-24): PhiMap 512 x 4 (TD-JEPA's OGBench encoder size) for FBWM (0.99) and JEPA VICReg on antmaze-medium, 3 seeds (`fbj_cap_*`). New flags `fbwm.py phi_num_layers`, `tdmpc_adapt.py enc_layers` (default 2 = unchanged).
