@@ -180,3 +180,6 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 ## 2026-11-23: reimplement TD-JEPA's FB for OGBench (user)
 - Focus moves to plain FB on antmaze / cube. New script `fb_tdjepa.py` (fb_jax.py untouched), a faithful port of TD-JEPA's FBFlowBCAgent and its OGBench evaluation, so our numbers can be compared with their 73.0% / 49.6%.
 - Their sweep, one seed per config first (user).
+
+## 2026-11-24: PhiMap 64 as the encoder of FBWM and JEPA everywhere
+- User: the same encoder architecture in DMC and OGBench. PhiMap 256 for FBWM hurt cheetah / quadruped (journal 11-16/17), so everything goes to PhiMap 64; the JEPA WM (VICReg + EMA target, and SIGReg + online target on OGBench) is retrained at 64 with FBWM's optimiser. Discount (0.95 DMC, 0.99 OGBench), z_dim (50 DMC, 200 OGBench; z50 untested on antmaze) and bc_coef are per-env hyper-parameters. LeWM and DINO-WM stay as-published baselines with their own planner.
