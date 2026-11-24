@@ -101,6 +101,7 @@ if __name__ == '__main__':
     ENCODER = str(kwargs.get('encoder', 'mlp'))
     assert ENCODER in ('mlp', 'phimap'), "encoder=mlp|phimap"
     ENC_DIM = int(kwargs['enc_dim']) if 'enc_dim' in kwargs else 256
+    ENC_LAYERS = int(kwargs['enc_layers']) if 'enc_layers' in kwargs else 2   # PhiMap depth (Linear layers = enc_layers + 1); default 2 = unchanged. mode=adapt reads it from wm_ckpt
     # reg=vicreg|sigreg, target=ema|online (2026-11-22, "LeWM's loss on our backbone", mode=pretrain only):
     #   reg=vicreg (default): VICReg variance + covariance on phi(s_0) (var_coef, cov_coef), as before.
     #   reg=sigreg: LeWM's SIGReg (port of wm_baselines.py / LeWM's module.py) instead of VICReg, sigreg_coef (default 0.09, LeWM's config)
@@ -121,6 +122,8 @@ if __name__ == '__main__':
         assert 'encoder' not in kwargs or ENCODER == _ckpt_encoder, f"encoder={ENCODER} but wm_ckpt has a {_ckpt_encoder} encoder"
         ENCODER = _ckpt_encoder
         ENC_DIM = int(_wm_enc['TorchDense_0' if ENCODER == 'phimap' else 'Dense_0']['kernel'].shape[1])
+        if ENCODER == 'phimap':
+            ENC_LAYERS = len([k for k in _wm_enc if k.startswith('TorchDense_')]) - 1
         del _wm_enc
 
     def bc_combine(main, bc, coef):
@@ -697,6 +700,7 @@ if __name__ == '__main__':
         batch_size:        int   = 512
         latent_dim:        int   = 50
         enc_dim:           int   = 256
+        enc_layers:        int   = 2        # encoder=phimap: number of hidden layers (see ENC_LAYERS)
         encoder:           str   = 'mlp'    # mlp: TD-MPC encoder; phimap: fbwm.py's gphi trunk (see encoder=)
         reg:               str   = 'vicreg' # pretrain anti-collapse term: vicreg | sigreg (see reg=)
         target:            str   = 'ema'    # pretrain consistency target: ema (phi_bar, no gradient) | online (phi, with gradient)
@@ -738,7 +742,7 @@ if __name__ == '__main__':
             self.cfg, self.obs_dim, self.action_dim = config, obs_dim, action_dim
             c = config
             mlp = (c.mlp_dim, c.mlp_dim)
-            self.encoder    = (PhiMap(c.enc_dim, c.latent_dim) if c.encoder == 'phimap' else
+            self.encoder    = (PhiMap(c.enc_dim, c.latent_dim, num_layers=c.enc_layers) if c.encoder == 'phimap' else
                                MLP(hidden=(c.enc_dim, c.enc_dim), out_dim=c.latent_dim))
             self.dynamics   = MLP(hidden=mlp, out_dim=c.latent_dim)
             self.reward_net = MLP(hidden=mlp, out_dim=1, zero_last=True)
@@ -1071,7 +1075,7 @@ if __name__ == '__main__':
             h = self.encode(ts.params['encoder'], obs)
             return self.pi(ts.pi_params, h, None, 0.0)
 
-    adapt_config = AdaptConfig(batch_size=BATCH_SIZE, horizon=HORIZON, bc_coef=BC_COEF, encoder=ENCODER, enc_dim=ENC_DIM,
+    adapt_config = AdaptConfig(batch_size=BATCH_SIZE, horizon=HORIZON, bc_coef=BC_COEF, encoder=ENCODER, enc_dim=ENC_DIM, enc_layers=ENC_LAYERS,
                                reg=REG, target=TARGET, sigreg_coef=SIGREG_COEF, num_proj=NUM_PROJ)
     for name in ('lr', 'discount', 'consistency_coef', 'var_coef', 'cov_coef'):
         if name in kwargs:

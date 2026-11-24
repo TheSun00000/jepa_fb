@@ -884,6 +884,7 @@ if __name__ == '__main__':
         latent_dim:          int   = 50      # try 128 to give the trunk more room
         z_dim:               int   = 50
         phi_hidden_dim:      int   = 64      # gphi: phi = PhiMap (hidden width)
+        phi_num_layers:      int   = 2       # gphi: PhiMap depth (hidden layers before the output layer); 2 = the default trunk
         enc_dim:             int   = 256     # sepB: phi = TD-MPC MLP encoder (Linear-ELU x2, hidden width); also the B-head width is mlp_dim
         mlp_dim:             int   = 512     # dynamics
         backward_hidden_dim: int   = 526     # g: the FB BackwardMap architecture (same width as in the FB script)
@@ -956,7 +957,7 @@ if __name__ == '__main__':
             elif c.frozen_wm and not c.frozen_wm_phimap:
                 self.encoder = MLP(hidden=(c.enc_dim, c.enc_dim), out_dim=c.latent_dim)              # phi: the TD-MPC encoder of tdmpc_adapt.py
             else:
-                self.encoder = PhiMap(c.phi_hidden_dim, c.latent_dim)                               # phi: the trunk
+                self.encoder = PhiMap(c.phi_hidden_dim, c.latent_dim, num_layers=c.phi_num_layers)                               # phi: the trunk
             self.dynamics    = MLP(hidden=(c.mlp_dim, c.mlp_dim), out_dim=self.latent_dim)
             # B's network, the FB BackwardMap: sepB on the raw observation, gphi on the latent (g)
             self.b_net       = BackwardMap(c.backward_hidden_dim, c.z_dim)
@@ -1389,7 +1390,7 @@ if __name__ == '__main__':
     for name in ('fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: str(kwargs[name]).lower() in ('1', 'true')})
-    for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'hidden_dim', 'feature_dim', 'mlp_dim'):
+    for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'phi_num_layers', 'hidden_dim', 'feature_dim', 'mlp_dim'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: int(kwargs[name])})
     if FREEZE_WM:
