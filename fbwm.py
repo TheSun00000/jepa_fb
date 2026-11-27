@@ -150,7 +150,10 @@ if __name__ == '__main__':
                      "fb_loss", "fb_diag", "fb_offdiag", "q_loss", "b_ortho_loss", "f_grad_norm", "b_grad_norm", "M1", "F_norm",
                      "pi_loss", "q_mean", "bhead_loss",
                      "latent_std", "feat_cov_l2", "feat_mean_norm", "b_std", "b_cov_l2", "b_mean_norm", "fcons_loss",
-                     "latent_rank", "vicreg_var", "vicreg_cov"]   # latent_rank (2026-11-22): RankMe effective rank of phi(s_0) on the batch, as tdmpc_adapt.py
+                     "latent_rank", "vicreg_var", "vicreg_cov"] + (   # diag_grad=1 (2026-11-26): gradient decomposition columns
+                    [f"dg_{p}_{t}" for p in ('f', 'b') for t in ('offdiag', 'diag', 'q', 'bortho')]
+                    + ["dg_lat_f", "dg_lat_b", "dg_lat_cons", "phi_raw_norm"]
+                    if str(kwargs.get('diag_grad', '0')).lower() in ('1', 'true') else [])   # latent_rank (2026-11-22): RankMe effective rank of phi(s_0) on the batch, as tdmpc_adapt.py
     train_logger = CSVLogger(
         filepath=f"{LOGS_FOLDER}/training_log.csv",
         fieldnames=["step"] + TRAIN_METRICS + ["time"],
@@ -905,6 +908,10 @@ if __name__ == '__main__':
         b_ortho_coef:        float = 1.0     # orthonormality loss on B(s'), inside the FB loss (FB's value)
         f_encoder_grad:      float = 0.1     # scale of the FB gradient that reaches phi through F's input
         b_encoder_grad:      float = 1.0     # gphi only. Scale of the FB gradient that reaches phi through B = g(phi)
+        model_encoder_grad:  float = 1.0     # 2026-11-26 (user): scale of the model-loss gradient (consistency, bcons, fcons M2, ortho/VICReg on phi)
+                                             # that reaches phi. 0 = phi trained by FB only; the dynamics (and g via bcons) still fit pred(phi(s), a) -> phi(s')
+        diag_grad:           bool  = False   # 2026-11-26 diagnostic (slow, ~5 extra FB backward passes per update): split phi's gradient by FB term
+                                             # and path, latent-level gradients (F input, B input, consistency), pre-sphere norm of phi; extra dg_* columns
         q_loss:              bool  = True    # FB's auxiliary Q-loss
         q_loss_coef:         float = 0.01
         mix_ratio:           float = 0.5     # fraction of task vectors taken from B(random dataset state), as in FB
@@ -1211,17 +1218,49 @@ if __name__ == '__main__':
 
             grad_enc_f = jax.tree_util.tree_map(lambda g: c.f_encoder_grad * g, grad_enc_f)
             grad_enc_b = jax.tree_util.tree_map(lambda g: c.b_encoder_grad * g, grad_enc_b)    # identically 0 for sepB
+            grad_model = dict(grad_model, encoder=jax.tree_util.tree_map(lambda g: c.model_encoder_grad * g, grad_model['encoder']))
             grads = {
                 'encoder':  jax.tree_util.tree_map(lambda a, b_, c_: a + b_ + c_, grad_model['encoder'], grad_enc_f, grad_enc_b),
                 'dynamics': grad_model['dynamics'],
             }
             grad_b = jax.tree_util.tree_map(jnp.add, grad_b_model, grad_b_fb)                     # grad_b_model = 0 for sepB
             grad_f = jax.tree_util.tree_map(jnp.add, grad_f, grad_f_model)                         # grad_f_model = 0 unless fcons_coef > 0
-            model_enc_grad_norm = optax.global_norm(grad_model['encoder'])     # consistency (+ B-consistency) + orthonormality
+            model_enc_grad_norm = optax.global_norm(grad_model['encoder'])     # consistency (+ B-consistency) + orthonormality (after scaling)
             f_enc_grad_norm     = optax.global_norm(grad_enc_f)                # from F's input (after scaling)
             b_enc_grad_norm     = optax.global_norm(grad_enc_b)                # from B = g(phi) (after scaling; 0 for sepB)
             f_grad_norm         = optax.global_norm(grad_f)
             b_grad_norm         = optax.global_norm(grad_b)
+
+            diag = {}
+            if c.diag_grad:
+                # FB loss terms as functions of the two latents (F's input phi(s), B's input phi(s')), same batch, z and targets as above
+                def fb_terms_lat(h0_, hb_):
+                    F1_, F2_ = self.F(ts.f_params, h0_, action[0], z)
+                    B_ = self.backward(None, ts.b_params, obs[1]) if self.sepB else self.b_from_latent(ts.b_params, hb_)
+                    _, a_ = fb_losses(F1_, F2_, B_, z, target_M, next_Q, c.discount, c.q_loss_coef, c.q_loss)
+                    return {'offdiag': a_['fb_offdiag'], 'diag': a_['fb_diag'], 'q': c.q_loss_coef * a_['q_loss'],
+                            'bortho': c.b_ortho_coef * gram_ortho(B_)}
+                for nm in ('offdiag', 'diag', 'q', 'bortho'):
+                    gf_, gb_ = jax.grad(lambda ef, eb: fb_terms_lat(self.encode(ef, obs[0]), self.encode(eb, obs[1]))[nm],
+                                        argnums=(0, 1))(ts.params['encoder'], ts.params['encoder'])
+                    diag[f'dg_f_{nm}'] = c.f_encoder_grad * optax.global_norm(gf_)        # param-space, F path (after scaling)
+                    diag[f'dg_b_{nm}'] = c.b_encoder_grad * optax.global_norm(gb_)        # param-space, B path (after scaling)
+                h0_r = self.encode(ts.params['encoder'], obs[0])
+                hb_r = self.encode(ts.params['encoder'], obs[1])
+                gh0_, ghb_ = jax.grad(lambda a_, b_: sum(fb_terms_lat(a_, b_).values()), argnums=(0, 1))(h0_r, hb_r)
+                diag['dg_lat_f'] = c.f_encoder_grad * jnp.linalg.norm(gh0_)               # latent-space, Frobenius over the batch
+                diag['dg_lat_b'] = c.b_encoder_grad * jnp.linalg.norm(ghb_)
+
+                def cons_of_h0(h0_):
+                    def step_(h, xs):
+                        a_t, tgt, rho = xs
+                        hn = self.next(ts.params, h, a_t)
+                        return hn, rho * jnp.mean((hn - tgt) ** 2, axis=-1)
+                    _, cs_ = jax.lax.scan(step_, h0_, (action, target_h, rho_t))
+                    return c.consistency_coef * cs_.sum(0).mean() / H
+                diag['dg_lat_cons'] = c.model_encoder_grad * jnp.linalg.norm(jax.grad(cons_of_h0)(h0_r))
+                raw_ = self.encoder.apply({'params': ts.params['encoder']}, obs[0])
+                diag['phi_raw_norm'] = jnp.linalg.norm(raw_, axis=-1).mean()             # sphere amplification = sqrt(latent_dim) / this
 
             updates, optimizer_state = self.optimizer.update(grads, ts.optimizer_state, ts.params)
             params = optax.apply_updates(ts.params, updates)
@@ -1279,6 +1318,7 @@ if __name__ == '__main__':
                 'b_std': fb_aux['b_std'], 'b_cov_l2': fb_aux['b_cov_l2'], 'b_mean_norm': fb_aux['b_mean_norm'],
                 'fcons_loss': m_aux['fcons_loss'], 'latent_rank': m_aux['latent_rank'],
                 'vicreg_var': m_aux['vicreg_var'], 'vicreg_cov': m_aux['vicreg_cov'],
+                **diag,
             }
             return ts, metrics
 
@@ -1376,7 +1416,7 @@ if __name__ == '__main__':
     tdmpc_config = TDMPCFBConfig(variant=VARIANT, bc_coef=BC_COEF, batch_size=BATCH_SIZE, horizon=HORIZON, phi_identity=PHI_IDENTITY, frozen_wm=FREEZE_WM,
                                  cons_target=CONS_TARGET)
     for name in ('lr', 'discount', 'consistency_coef', 'bcons_coef', 'ortho_coef', 'b_ortho_coef', 'f_encoder_grad', 'vicreg_var_coef', 'vicreg_cov_coef',
-                 'b_encoder_grad', 'q_loss_coef', 'mix_ratio', 'stddev', 'tau'):
+                 'b_encoder_grad', 'model_encoder_grad', 'q_loss_coef', 'mix_ratio', 'stddev', 'tau'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: float(kwargs[name])})
     if 'fcons_coef' in kwargs:
@@ -1387,7 +1427,7 @@ if __name__ == '__main__':
     for name in ('iterations', 'num_samples', 'num_elites'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: int(kwargs[name])})
-    for name in ('fcons_model_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
+    for name in ('fcons_model_grad', 'diag_grad', 'mppi_terminal_only', 'mppi_norm', 'mppi_root_check', 'mppi_init_policy'):
         if name in kwargs:
             tdmpc_config = dataclasses.replace(tdmpc_config, **{name: str(kwargs[name]).lower() in ('1', 'true')})
     for name in ('latent_dim', 'z_dim', 'enc_dim', 'phi_hidden_dim', 'phi_num_layers', 'hidden_dim', 'feature_dim', 'mlp_dim'):
@@ -1398,6 +1438,7 @@ if __name__ == '__main__':
                                            **({'phi_hidden_dim': FROZEN_WM_WIDTH} if FROZEN_WM_PHIMAP else {'enc_dim': FROZEN_WM_WIDTH}))
     if VARIANT == 'sepB':
         assert 'bcons_coef' not in kwargs and 'b_encoder_grad' not in kwargs, "bcons_coef and b_encoder_grad are gphi options"
+    assert not (tdmpc_config.diag_grad and PHI_IDENTITY), "diag_grad needs an encoder (no phi_identity)"
     print(tdmpc_config)
     with open(f'{LOGS_FOLDER}/info.txt', 'a') as file:
         file.write(str(tdmpc_config) + '\n')

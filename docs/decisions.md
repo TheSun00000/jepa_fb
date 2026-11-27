@@ -183,3 +183,12 @@ The JZ clone was the reference. Local copies that differed were backed up in `ba
 
 ## 2026-11-24: PhiMap 64 as the encoder of FBWM and JEPA everywhere
 - User: the same encoder architecture in DMC and OGBench. PhiMap 256 for FBWM hurt cheetah / quadruped (journal 11-16/17), so everything goes to PhiMap 64; the JEPA WM (VICReg + EMA target, and SIGReg + online target on OGBench) is retrained at 64 with FBWM's optimiser. Discount (0.95 DMC, 0.99 OGBench), z_dim (50 DMC, 200 OGBench; z50 untested on antmaze) and bc_coef are per-env hyper-parameters. LeWM and DINO-WM stay as-published baselines with their own planner.
+
+## 2026-11-26: baseline set and framing (user, after an independent subagent review)
+- Framing: "FB as task pressure on a JEPA latent; one model gives a zero-shot planner and a policy". Not "planning beats the policy": on goal reaching the FB actor beats every planner, and the paper says so (use the actor there).
+- Main comparisons: JEPA world models (VICReg, SIGReg) + per-task adaptation, TD-MPC upper bound, LeWM / DINO-WM on goal reaching.
+- Central ablation: JEPA + FB on the frozen latent (direct test of the shaping claim). Proposed, not yet approved to run: per-task adaptation on the FBWM latent vs on the plain JEPA latent.
+- Zero-shot rows: plain FB and the FBWM actor, as ablations of the method (plain FB only once it is near published strength); TD-JEPA as the one external zero-shot baseline (run its code on our data, or at least quote matched-task numbers). HILP, FRE, BYOL-gamma, Sparse-TD-JEPA, ZOL: cited only.
+- Why: the headline (plan zero-shot for rewards given as labelled states) is a zero-shot RL claim and FB is in the method, so FB / zero-shot reviewers will be assigned at a main-track venue; TD-JEPA (ICLR 2026 oral, same suite) will be brought in by them if we leave it out.
+- Biggest risk: absolute numbers (FBWM 100-270 below TD-JEPA / published FB on walker and cheetah). Baselines and FBWM's FB settings (tau 0.001, 2-3M updates) to be fixed later; nothing queued for now (user).
+- Details: `docs/literature/positioning_2026-11-26.md`.
